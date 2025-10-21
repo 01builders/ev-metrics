@@ -1,6 +1,6 @@
 # DA Monitor
 
-Data Availability monitoring tool for rollups using Celestia DA. This tool monitors EVM block headers in real-time, queries ev-node for DA submission information, and verifies blob data on Celestia.
+Data Availability monitoring tool for evstack using Celestia DA. This tool monitors EVM block headers in real-time, queries ev-node for DA submission information, and verifies blob data on Celestia.
 
 ## Features
 
@@ -62,8 +62,7 @@ Metrics will be available at `http://localhost:2112/metrics`
 - `--evm-ws-url`: EVM client WebSocket URL (default: `ws://localhost:8546`)
 - `--celestia-url`: Celestia DA JSON-RPC URL (default: `http://localhost:26658`)
 - `--celestia-token`: Celestia authentication token (optional)
-- `--block-height`: Specific block height to verify (0 = stream mode, default: 0)
-- `--duration`: Duration in seconds to stream (0 = infinite, default: 30)
+- `--duration`: Duration in seconds to stream (0 = infinite )
 - `--chain-id`: Chain identifier for metrics labels (default: "testnet")
 - `--enable-metrics`: Enable Prometheus metrics HTTP server (default: false)
 - `--port`: HTTP server port for metrics (default: 2112)

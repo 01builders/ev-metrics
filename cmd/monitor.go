@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"github.com/01builders/da-monitor/internal/drift"
 	coreda "github.com/evstack/ev-node/core/da"
 	"golang.org/x/sync/errgroup"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
+	"strings"
 )
 
 const (
@@ -30,6 +32,9 @@ const (
 	flagPort              = "port"
 	flagChain             = "chain-id"
 	flagEnableMetrics     = "enable-metrics"
+	flagReferenceNode     = "reference-node"
+	flagFullNodes         = "full-nodes"
+	flagPollingInterval   = "polling-interval"
 
 	metricsPath = "/metrics"
 )
@@ -48,6 +53,9 @@ type flagValues struct {
 	port              int
 	chainID           string
 	enableMetrics     bool
+	referenceNode     string
+	fullNodes         string
+	pollingInterval   int
 }
 
 func NewMonitorCmd() *cobra.Command {
@@ -73,6 +81,9 @@ func NewMonitorCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&flags.enableMetrics, flagEnableMetrics, false, "Enable Prometheus metrics HTTP server")
 	cmd.Flags().IntVar(&flags.port, flagPort, 2112, "HTTP server port for metrics (only used if --enable-metrics is set)")
 	cmd.Flags().StringVar(&flags.chainID, flagChain, "testnet", "chainID identifier for metrics labels")
+	cmd.Flags().StringVar(&flags.referenceNode, flagReferenceNode, "", "Reference node RPC endpoint URL (sequencer) for drift monitoring")
+	cmd.Flags().StringVar(&flags.fullNodes, flagFullNodes, "", "Comma-separated list of full node RPC endpoint URLs for drift monitoring")
+	cmd.Flags().IntVar(&flags.pollingInterval, flagPollingInterval, 10, "Polling interval in seconds for checking node block heights (default: 10)")
 
 	if err := cmd.MarkFlagRequired(flagHeaderNS); err != nil {
 		panic(err)
@@ -211,6 +222,19 @@ func monitorAndVerifyDataAndHeaders(cmd *cobra.Command, args []string) error {
 	})
 	g.Go(func() error {
 		return verifier.ProcessHeaders(streamCtx)
+	})
+
+	g.Go(func() error {
+		if flags.referenceNode == "" || len(flags.fullNodes) == 0 {
+			logger.Info().
+				Str("reference_node", flags.referenceNode).
+				Strs("full_nodes", strings.Split(flags.fullNodes, ",")).
+				Msg("skipping node drift monitoring")
+			return nil
+		}
+
+		fullNodeList := strings.Split(flags.fullNodes, ",")
+		return drift.Monitor(retryCtx, m, flags.chainID, flags.referenceNode, fullNodeList, flags.pollingInterval, logger)
 	})
 
 	return g.Wait()

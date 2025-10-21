@@ -11,10 +11,18 @@ import (
 
 // Metrics contains Prometheus metrics for DA verification failures
 type Metrics struct {
-	// track ranges of unsubmitted blocks
-	UnsubmittedRangeStart  *prometheus.GaugeVec
-	UnsubmittedRangeEnd    *prometheus.GaugeVec
+	// UnsubmittedRangeStart tracks the start of unsubmitted block ranges.
+	UnsubmittedRangeStart *prometheus.GaugeVec
+	// UnsubmittedRangeEnd tracks the end of unsubmitted block ranges.
+	UnsubmittedRangeEnd *prometheus.GaugeVec
+	// UnsubmittedBlocksTotal tracks the total number of unsubmitted blocks.
 	UnsubmittedBlocksTotal *prometheus.GaugeVec
+	// ReferenceBlockHeight tracks the block height for reference endpoint (sequencer).
+	ReferenceBlockHeight *prometheus.GaugeVec
+	// CurrentBlockHeight tracks the block height for target endpoints (operator nodes).
+	CurrentBlockHeight *prometheus.GaugeVec
+	// BlockHeightDrift tracks the drift between reference and target endpoints for a specific node.
+	BlockHeightDrift *prometheus.GaugeVec
 
 	mu     sync.Mutex
 	ranges map[string][]*blockRange // key: blobType -> sorted slice of ranges
@@ -57,6 +65,30 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 				Help:      "total number of unsubmitted blocks",
 			},
 			[]string{"chain_id", "blob_type"},
+		),
+		ReferenceBlockHeight: factory.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Name:      "reference_block_height",
+				Help:      "current block height of the reference endpoint (sequencer)",
+			},
+			[]string{"chain_id", "endpoint"},
+		),
+		CurrentBlockHeight: factory.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Name:      "target_block_height",
+				Help:      "current block height of target endpoints (operator nodes)",
+			},
+			[]string{"chain_id", "endpoint"},
+		),
+		BlockHeightDrift: factory.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Name:      "block_height_drift",
+				Help:      "block height difference between reference and target endpoints (positive = target behind, negative = target ahead)",
+			},
+			[]string{"chain_id", "target_endpoint"},
 		),
 		ranges: make(map[string][]*blockRange),
 	}
@@ -247,4 +279,20 @@ func (m *Metrics) findRangeIndex(ranges []*blockRange, blockHeight uint64) int {
 // rangeID generates the Prometheus label value for the range
 func (m *Metrics) rangeID(r *blockRange) string {
 	return fmt.Sprintf("%d-%d", r.start, r.end)
+}
+
+// RecordReferenceBlockHeight records the current block height of the reference endpoint
+func (m *Metrics) RecordReferenceBlockHeight(chainID, endpoint string, height uint64) {
+	m.ReferenceBlockHeight.WithLabelValues(chainID, endpoint).Set(float64(height))
+}
+
+// RecordCurrentBlockHeight records the current block height of a target endpoint
+func (m *Metrics) RecordCurrentBlockHeight(chainID, endpoint string, height uint64) {
+	m.CurrentBlockHeight.WithLabelValues(chainID, endpoint).Set(float64(height))
+}
+
+// RecordBlockHeightDrift calculates and records the drift between reference and target
+func (m *Metrics) RecordBlockHeightDrift(chainID, targetEndpoint string, referenceHeight, targetHeight uint64) {
+	drift := int64(referenceHeight) - int64(targetHeight)
+	m.BlockHeightDrift.WithLabelValues(chainID, targetEndpoint).Set(float64(drift))
 }
