@@ -6,7 +6,6 @@ import (
 	"github.com/01builders/ev-metrics/internal/drift"
 	coreda "github.com/evstack/ev-node/core/da"
 	"golang.org/x/sync/errgroup"
-	"net/http"
 	"os"
 	"time"
 
@@ -14,7 +13,6 @@ import (
 	"github.com/01builders/ev-metrics/internal/evm"
 	"github.com/01builders/ev-metrics/internal/evnode"
 	"github.com/01builders/ev-metrics/internal/metrics"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
 	"strings"
@@ -167,38 +165,15 @@ func monitorAndVerifyDataAndHeaders(cmd *cobra.Command, args []string) error {
 		cfg.CelestiaClient.Close()
 	}()
 
-	// start HTTP server for metrics if enabled
-	if flags.enableMetrics {
-		http.Handle(metricsPath, promhttp.Handler())
-		http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("OK"))
-		})
-
-		serverAddr := fmt.Sprintf(":%d", flags.port)
-		go func() {
-			logger.Info().
-				Str("addr", serverAddr).
-				Str("metrics_path", metricsPath).
-				Msg("starting HTTP server for Prometheus metrics")
-			if err := http.ListenAndServe(serverAddr, nil); err != nil {
-				logger.Error().Err(err).Msg("HTTP server failed")
-			}
-		}()
-	} else {
-		logger.Info().Msg("Prometheus metrics server disabled (use --enable-metrics to enable)")
-	}
-
 	// Setup timeout if specified
-	streamCtx := ctx
 	if flags.duration > 0 {
 		var cancel context.CancelFunc
-		streamCtx, cancel = context.WithTimeout(ctx, time.Duration(flags.duration)*time.Second)
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(flags.duration)*time.Second)
 		defer cancel()
 	}
 
 	// initialize metrics
-	m := metrics.New("da_monitor")
+	m := metrics.New("ev_metrics")
 	// create block verifier
 	verifier := NewBlockVerifier(
 		cfg.EVNodeClient,
@@ -211,31 +186,27 @@ func monitorAndVerifyDataAndHeaders(cmd *cobra.Command, args []string) error {
 		logger,
 	)
 
-	// start background retry processor
-	retryCtx, retryCancel := context.WithCancel(ctx)
-	defer retryCancel()
-
 	var g errgroup.Group
 
-	g.Go(func() error {
-		return verifier.VerifyHeadersAndData(retryCtx)
-	})
-	g.Go(func() error {
-		return verifier.ProcessHeaders(streamCtx)
-	})
+	if flags.enableMetrics {
+		g.Go(func() error {
+			return metrics.StartServer(metricsPath, flags.port, logger)
+		})
+	}
 
 	g.Go(func() error {
-		if flags.referenceNode == "" || len(flags.fullNodes) == 0 {
-			logger.Info().
-				Str("reference_node", flags.referenceNode).
-				Strs("full_nodes", strings.Split(flags.fullNodes, ",")).
-				Msg("skipping node drift monitoring")
-			return nil
-		}
-
-		fullNodeList := strings.Split(flags.fullNodes, ",")
-		return drift.Monitor(retryCtx, m, flags.chainID, flags.referenceNode, fullNodeList, flags.pollingInterval, logger)
+		return verifier.VerifyHeadersAndData(ctx)
 	})
+	g.Go(func() error {
+		return verifier.ProcessHeaders(ctx)
+	})
+
+	if flags.referenceNode == "" || len(flags.fullNodes) == 0 {
+		g.Go(func() error {
+			fullNodeList := strings.Split(flags.fullNodes, ",")
+			return drift.Monitor(ctx, m, flags.chainID, flags.referenceNode, fullNodeList, flags.pollingInterval, logger)
+		})
+	}
 
 	return g.Wait()
 }

@@ -1,6 +1,6 @@
-# DA Monitor
+# EV Metrics
 
-Data Availability monitoring tool for evstack using Celestia DA. This tool monitors EVM block headers in real-time, queries ev-node for DA submission information, and verifies blob data on Celestia.
+Data Availability metrics and monitoring tool for evstack using Celestia DA. This tool monitors EVM block headers in real-time, queries ev-node for DA submission information, and verifies blob data on Celestia.
 
 ## Features
 
@@ -83,12 +83,12 @@ Metrics will be available at `http://localhost:2112/metrics`
 
 When metrics are enabled, the following metrics are exposed:
 
-### `da_monitor_unsubmitted_block_range_start`
+### `ev_metrics_unsubmitted_block_range_start`
 - **Type**: Gauge
 - **Labels**: `chain_id`, `blob_type`, `range_id`
 - **Description**: Start block height of unverified block ranges
 
-### `da_monitor_unsubmitted_block_range_end`
+### `ev_metrics_unsubmitted_block_range_end`
 - **Type**: Gauge
 - **Labels**: `chain_id`, `blob_type`, `range_id`
 - **Description**: End block height of unverified block ranges
