@@ -31,7 +31,7 @@ const (
 	flagVerbose           = "verbose"
 	flagBlockHeight       = "block-height"
 	flagPort              = "port"
-	flagChain             = "chainID"
+	flagChain             = "chain-id"
 	flagEnableMetrics     = "enable-metrics"
 
 	metricsPath = "/metrics"
@@ -73,7 +73,7 @@ func NewMonitorCmd() *cobra.Command {
 	cmd.Flags().StringVar(&flags.headerNS, flagHeaderNS, "", "Header namespace (29-byte hex, required)")
 	cmd.Flags().StringVar(&flags.dataNS, flagDataNS, "", "Data namespace (29-byte hex, required)")
 	cmd.Flags().Int64Var(&flags.blockHeight, flagBlockHeight, 0, "Specific block height to verify (0 = stream mode)")
-	cmd.Flags().IntVar(&flags.duration, flagDuration, 30, "Duration in seconds to stream (0 = infinite, ignored if block-height is set)")
+	cmd.Flags().IntVar(&flags.duration, flagDuration, 0, "Duration in seconds to stream (0 = infinite, ignored if block-height is set)")
 	cmd.Flags().BoolVar(&flags.verbose, flagVerbose, false, "Enable verbose logging")
 	cmd.Flags().BoolVar(&flags.enableMetrics, flagEnableMetrics, false, "Enable Prometheus metrics HTTP server")
 	cmd.Flags().IntVar(&flags.port, flagPort, 2112, "HTTP server port for metrics (only used if --enable-metrics is set)")
@@ -159,7 +159,6 @@ func monitorAndVerifyDataAndHeaders(cmd *cobra.Command, args []string) error {
 	defer func() {
 		cfg.EvmClient.Close()
 		cfg.CelestiaClient.Close()
-		//cfg.EVNodeClient.Close()
 	}()
 
 	// start HTTP server for metrics if enabled
@@ -167,7 +166,7 @@ func monitorAndVerifyDataAndHeaders(cmd *cobra.Command, args []string) error {
 		http.Handle(metricsPath, promhttp.Handler())
 		http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("OK"))
+			_, _ = w.Write([]byte("OK"))
 		})
 
 		serverAddr := fmt.Sprintf(":%d", flags.port)

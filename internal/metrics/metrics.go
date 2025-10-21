@@ -39,7 +39,7 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 				Name:      "unsubmitted_block_range_start",
 				Help:      "start of unsubmitted block range",
 			},
-			[]string{"chain", "blob_type", "range_id"},
+			[]string{"chain_id", "blob_type", "range_id"},
 		),
 		UnsubmittedRangeEnd: factory.NewGaugeVec(
 			prometheus.GaugeOpts{
@@ -47,7 +47,7 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 				Name:      "unsubmitted_block_range_end",
 				Help:      "end of unsubmitted block range",
 			},
-			[]string{"chain", "blob_type", "range_id"},
+			[]string{"chain_id", "blob_type", "range_id"},
 		),
 		ranges: make(map[string][]*blockRange),
 	}
