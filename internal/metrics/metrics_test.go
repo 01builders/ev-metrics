@@ -118,6 +118,20 @@ func TestMetrics_RecordMissingBlock(t *testing.T) {
 				}
 				require.True(t, found, "expected to find range %s [%d-%d]", expected.blobType, expected.start, expected.end)
 			}
+
+			// verify total missing blocks metric for each blob type
+			blobTypes := make(map[string]bool)
+			for _, r := range tt.expectedRanges {
+				blobTypes[r.blobType] = true
+			}
+			for blobType := range blobTypes {
+				expectedTotal := calculateExpectedTotal(tt.expectedRanges, blobType)
+				actualTotal := getMetricValue(t, reg, "test_unsubmitted_blocks_total", map[string]string{
+					"chain_id":  "testchain",
+					"blob_type": blobType,
+				})
+				require.Equal(t, float64(expectedTotal), actualTotal, "total missing blocks for %s should be %d", blobType, expectedTotal)
+			}
 		})
 	}
 }
@@ -256,6 +270,13 @@ func TestMetrics_RemoveVerifiedBlock(t *testing.T) {
 					totalRanges += len(ranges)
 				}
 				require.Equal(t, 0, totalRanges, "expected no ranges")
+
+				// verify total blocks metric is 0
+				actualTotal := getMetricValue(t, reg, "test_unsubmitted_blocks_total", map[string]string{
+					"chain_id":  tt.removeBlock.chain,
+					"blob_type": tt.removeBlock.blobType,
+				})
+				require.Equal(t, float64(0), actualTotal, "total missing blocks should be 0")
 			} else {
 				totalRanges := 0
 				for _, ranges := range m.ranges {
@@ -280,6 +301,20 @@ func TestMetrics_RemoveVerifiedBlock(t *testing.T) {
 					}
 					require.True(t, found, "expected to find range %s [%d-%d]", expected.blobType, expected.start, expected.end)
 				}
+
+				// verify total missing blocks metric for each blob type
+				blobTypes := make(map[string]bool)
+				for _, r := range tt.expectedRanges {
+					blobTypes[r.blobType] = true
+				}
+				for blobType := range blobTypes {
+					expectedTotal := calculateExpectedTotal(tt.expectedRanges, blobType)
+					actualTotal := getMetricValue(t, reg, "test_unsubmitted_blocks_total", map[string]string{
+						"chain_id":  tt.removeBlock.chain,
+						"blob_type": blobType,
+					})
+					require.Equal(t, float64(expectedTotal), actualTotal, "total missing blocks for %s should be %d", blobType, expectedTotal)
+				}
 			}
 		})
 	}
@@ -300,6 +335,13 @@ func TestMetrics_ComplexScenario(t *testing.T) {
 	}
 	require.Equal(t, 1, totalRanges, "should start with one range")
 
+	// verify total blocks: 100-110 = 11 blocks
+	actualTotal := getMetricValue(t, reg, "test_unsubmitted_blocks_total", map[string]string{
+		"chain_id":  "testchain",
+		"blob_type": "header",
+	})
+	require.Equal(t, float64(11), actualTotal, "should have 11 total missing blocks")
+
 	// remove block 103 - splits into two ranges
 	m.RemoveVerifiedBlock("testchain", "header", 103)
 	totalRanges = 0
@@ -308,6 +350,13 @@ func TestMetrics_ComplexScenario(t *testing.T) {
 	}
 	require.Equal(t, 2, totalRanges, "should have two ranges after first split")
 
+	// verify total blocks: 100-102 (3) + 104-110 (7) = 10 blocks
+	actualTotal = getMetricValue(t, reg, "test_unsubmitted_blocks_total", map[string]string{
+		"chain_id":  "testchain",
+		"blob_type": "header",
+	})
+	require.Equal(t, float64(10), actualTotal, "should have 10 total missing blocks after removing block 103")
+
 	// remove block 107 - splits second range
 	m.RemoveVerifiedBlock("testchain", "header", 107)
 	totalRanges = 0
@@ -315,6 +364,13 @@ func TestMetrics_ComplexScenario(t *testing.T) {
 		totalRanges += len(ranges)
 	}
 	require.Equal(t, 3, totalRanges, "should have three ranges after second split")
+
+	// verify total blocks: 100-102 (3) + 104-106 (3) + 108-110 (3) = 9 blocks
+	actualTotal = getMetricValue(t, reg, "test_unsubmitted_blocks_total", map[string]string{
+		"chain_id":  "testchain",
+		"blob_type": "header",
+	})
+	require.Equal(t, float64(9), actualTotal, "should have 9 total missing blocks after removing block 107")
 
 	// verify final ranges: 100-102, 104-106, 108-110
 	expectedRanges := []expectedRange{
@@ -351,6 +407,13 @@ func TestMetrics_ComplexScenario(t *testing.T) {
 		totalRanges += len(ranges)
 	}
 	require.Equal(t, 2, totalRanges, "should have two ranges after removing first range")
+
+	// verify total blocks: 104-106 (3) + 108-110 (3) = 6 blocks
+	actualTotal = getMetricValue(t, reg, "test_unsubmitted_blocks_total", map[string]string{
+		"chain_id":  "testchain",
+		"blob_type": "header",
+	})
+	require.Equal(t, float64(6), actualTotal, "should have 6 total missing blocks after removing first range")
 
 	// verify remaining ranges: 104-106, 108-110
 	expectedRanges = []expectedRange{
@@ -394,4 +457,44 @@ type expectedRange struct {
 	blobType string
 	start    uint64
 	end      uint64
+}
+
+// calculateExpectedTotal calculates the total number of blocks from expected ranges
+func calculateExpectedTotal(ranges []expectedRange, blobType string) uint64 {
+	total := uint64(0)
+	for _, r := range ranges {
+		if r.blobType == blobType {
+			total += r.end - r.start + 1
+		}
+	}
+	return total
+}
+
+// getMetricValue retrieves the current value of a gauge metric
+func getMetricValue(t *testing.T, reg *prometheus.Registry, metricName string, labels map[string]string) float64 {
+	t.Helper()
+	metrics, err := reg.Gather()
+	require.NoError(t, err)
+
+	for _, mf := range metrics {
+		if mf.GetName() == metricName {
+			for _, m := range mf.GetMetric() {
+				// check if labels match
+				match := true
+				for _, label := range m.GetLabel() {
+					if expectedVal, ok := labels[label.GetName()]; ok {
+						if label.GetValue() != expectedVal {
+							match = false
+							break
+						}
+					}
+				}
+				if match && len(m.GetLabel()) == len(labels) {
+					return m.GetGauge().GetValue()
+				}
+			}
+		}
+	}
+	t.Fatalf("metric %s not found with labels %v", metricName, labels)
+	return 0
 }

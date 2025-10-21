@@ -12,8 +12,9 @@ import (
 // Metrics contains Prometheus metrics for DA verification failures
 type Metrics struct {
 	// track ranges of unsubmitted blocks
-	UnsubmittedRangeStart *prometheus.GaugeVec
-	UnsubmittedRangeEnd   *prometheus.GaugeVec
+	UnsubmittedRangeStart  *prometheus.GaugeVec
+	UnsubmittedRangeEnd    *prometheus.GaugeVec
+	UnsubmittedBlocksTotal *prometheus.GaugeVec
 
 	mu     sync.Mutex
 	ranges map[string][]*blockRange // key: blobType -> sorted slice of ranges
@@ -49,14 +50,35 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 			},
 			[]string{"chain_id", "blob_type", "range_id"},
 		),
+		UnsubmittedBlocksTotal: factory.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Name:      "unsubmitted_blocks_total",
+				Help:      "total number of unsubmitted blocks",
+			},
+			[]string{"chain_id", "blob_type"},
+		),
 		ranges: make(map[string][]*blockRange),
 	}
 }
 
+// RecordTotalMissingBlocks updates the total count of missing blocks metric.
+func (m *Metrics) RecordTotalMissingBlocks(chainID, blobType string) {
+	ranges := m.ranges[blobType]
+	total := uint64(0)
+	for _, r := range ranges {
+		total += r.end - r.start + 1 // inclusive count
+	}
+	m.UnsubmittedBlocksTotal.WithLabelValues(chainID, blobType).Set(float64(total))
+}
+
 // RecordMissingBlock records a block that is missing from Celestia
-func (m *Metrics) RecordMissingBlock(chain, blobType string, blockHeight uint64) {
+func (m *Metrics) RecordMissingBlock(chainID, blobType string, blockHeight uint64) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	defer func() {
+		m.RecordTotalMissingBlocks(chainID, blobType)
+		m.mu.Unlock()
+	}()
 
 	ranges := m.ranges[blobType]
 	if ranges == nil {
@@ -81,12 +103,12 @@ func (m *Metrics) RecordMissingBlock(chain, blobType string, blockHeight uint64)
 		leftRange := ranges[idx-1]
 		rightRange := ranges[idx]
 
-		m.deleteRange(chain, blobType, leftRange)
-		m.deleteRange(chain, blobType, rightRange)
+		m.deleteRange(chainID, blobType, leftRange)
+		m.deleteRange(chainID, blobType, rightRange)
 
 		// extend left range to include right range
 		leftRange.end = rightRange.end
-		m.updateRange(chain, blobType, leftRange)
+		m.updateRange(chainID, blobType, leftRange)
 
 		// remove right range from slice
 		m.ranges[blobType] = append(ranges[:idx], ranges[idx+1:]...)
@@ -96,18 +118,18 @@ func (m *Metrics) RecordMissingBlock(chain, blobType string, blockHeight uint64)
 	if canMergeLeft {
 		// extend left range
 		leftRange := ranges[idx-1]
-		m.deleteRange(chain, blobType, leftRange)
+		m.deleteRange(chainID, blobType, leftRange)
 		leftRange.end = blockHeight
-		m.updateRange(chain, blobType, leftRange)
+		m.updateRange(chainID, blobType, leftRange)
 		return
 	}
 
 	if canMergeRight {
 		// extend right range
 		rightRange := ranges[idx]
-		m.deleteRange(chain, blobType, rightRange)
+		m.deleteRange(chainID, blobType, rightRange)
 		rightRange.start = blockHeight
-		m.updateRange(chain, blobType, rightRange)
+		m.updateRange(chainID, blobType, rightRange)
 		return
 	}
 
@@ -118,14 +140,17 @@ func (m *Metrics) RecordMissingBlock(chain, blobType string, blockHeight uint64)
 	}
 	// insert at idx
 	ranges = append(ranges[:idx], append([]*blockRange{newRange}, ranges[idx:]...)...)
-	m.updateRange(chain, blobType, newRange)
+	m.updateRange(chainID, blobType, newRange)
 	m.ranges[blobType] = ranges
 }
 
 // RemoveVerifiedBlock removes a block from the missing ranges when it gets verified
-func (m *Metrics) RemoveVerifiedBlock(chain, blobType string, blockHeight uint64) {
+func (m *Metrics) RemoveVerifiedBlock(chainID, blobType string, blockHeight uint64) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	defer func() {
+		m.RecordTotalMissingBlocks(chainID, blobType)
+		m.mu.Unlock()
+	}()
 
 	ranges := m.ranges[blobType]
 	if ranges == nil {
@@ -147,7 +172,7 @@ func (m *Metrics) RemoveVerifiedBlock(chain, blobType string, blockHeight uint64
 
 	// range contains only this block, delete it.
 	if r.start == r.end {
-		m.deleteRange(chain, blobType, r)
+		m.deleteRange(chainID, blobType, r)
 		// remove range from slice
 		m.ranges[blobType] = append(ranges[:idx], ranges[idx+1:]...)
 		return
@@ -156,28 +181,28 @@ func (m *Metrics) RemoveVerifiedBlock(chain, blobType string, blockHeight uint64
 	// block is at start of range, shrink the range
 	if blockHeight == r.start {
 		// remove from start of range
-		m.deleteRange(chain, blobType, r)
+		m.deleteRange(chainID, blobType, r)
 		r.start++ // modify existing range
-		m.updateRange(chain, blobType, r)
+		m.updateRange(chainID, blobType, r)
 		return
 	}
 
 	// block is at end of range, shrink the range
 	if blockHeight == r.end {
 		// remove from end of range
-		m.deleteRange(chain, blobType, r)
+		m.deleteRange(chainID, blobType, r)
 		r.end-- // modify existing range
-		m.updateRange(chain, blobType, r)
+		m.updateRange(chainID, blobType, r)
 		return
 	}
 
 	// block is in middle of range, split into two ranges
 	oldEnd := r.end
-	m.deleteRange(chain, blobType, r)
+	m.deleteRange(chainID, blobType, r)
 
 	// update first range
 	r.end = blockHeight - 1
-	m.updateRange(chain, blobType, r)
+	m.updateRange(chainID, blobType, r)
 
 	// create new range for the second part
 	newRange := &blockRange{
@@ -186,7 +211,7 @@ func (m *Metrics) RemoveVerifiedBlock(chain, blobType string, blockHeight uint64
 	}
 	// insert after current range
 	ranges = append(ranges[:idx+1], append([]*blockRange{newRange}, ranges[idx+1:]...)...)
-	m.updateRange(chain, blobType, newRange)
+	m.updateRange(chainID, blobType, newRange)
 
 	m.ranges[blobType] = ranges
 }
