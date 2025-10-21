@@ -3,7 +3,7 @@ package drift
 import (
 	"context"
 	"fmt"
-	"github.com/01builders/da-monitor/internal/metrics"
+	"github.com/01builders/ev-metrics/internal/metrics"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/rs/zerolog"
 	"time"
