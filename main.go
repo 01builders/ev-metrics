@@ -11,7 +11,7 @@ import (
 func main() {
 	rootCmd := &cobra.Command{
 		Use:   "da-monitor",
-		Short: "DA monitoring tools for rollup data availability",
+		Short: "DA monitoring tool for ev-node data availability",
 	}
 
 	rootCmd.AddCommand(cmd.NewMonitorCmd())
