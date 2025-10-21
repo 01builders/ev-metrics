@@ -11,18 +11,17 @@ import (
 
 // Metrics contains Prometheus metrics for DA verification failures
 type Metrics struct {
-	// track ranges of unsubmitted blocks
-	UnsubmittedRangeStart  *prometheus.GaugeVec
-	UnsubmittedRangeEnd    *prometheus.GaugeVec
+	// UnsubmittedRangeStart tracks the start of unsubmitted block ranges.
+	UnsubmittedRangeStart *prometheus.GaugeVec
+	// UnsubmittedRangeEnd tracks the end of unsubmitted block ranges.
+	UnsubmittedRangeEnd *prometheus.GaugeVec
+	// UnsubmittedBlocksTotal tracks the total number of unsubmitted blocks.
 	UnsubmittedBlocksTotal *prometheus.GaugeVec
-
-	// track block height for reference endpoint (sequencer)
+	// ReferenceBlockHeight tracks the block height for reference endpoint (sequencer).
 	ReferenceBlockHeight *prometheus.GaugeVec
-
-	// track block height for target endpoints (operator nodes)
-	TargetBlockHeight *prometheus.GaugeVec
-
-	// track drift between reference and target endpoints
+	// CurrentBlockHeight tracks the block height for target endpoints (operator nodes).
+	CurrentBlockHeight *prometheus.GaugeVec
+	// BlockHeightDrift tracks the drift between reference and target endpoints for a specific node.
 	BlockHeightDrift *prometheus.GaugeVec
 
 	mu     sync.Mutex
@@ -75,7 +74,7 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 			},
 			[]string{"chain_id", "endpoint"},
 		),
-		TargetBlockHeight: factory.NewGaugeVec(
+		CurrentBlockHeight: factory.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Namespace: namespace,
 				Name:      "target_block_height",
@@ -287,9 +286,9 @@ func (m *Metrics) RecordReferenceBlockHeight(chainID, endpoint string, height ui
 	m.ReferenceBlockHeight.WithLabelValues(chainID, endpoint).Set(float64(height))
 }
 
-// RecordTargetBlockHeight records the current block height of a target endpoint
-func (m *Metrics) RecordTargetBlockHeight(chainID, endpoint string, height uint64) {
-	m.TargetBlockHeight.WithLabelValues(chainID, endpoint).Set(float64(height))
+// RecordCurrentBlockHeight records the current block height of a target endpoint
+func (m *Metrics) RecordCurrentBlockHeight(chainID, endpoint string, height uint64) {
+	m.CurrentBlockHeight.WithLabelValues(chainID, endpoint).Set(float64(height))
 }
 
 // RecordBlockHeightDrift calculates and records the drift between reference and target

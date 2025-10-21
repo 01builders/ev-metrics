@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"github.com/01builders/da-monitor/internal/drift"
 	coreda "github.com/evstack/ev-node/core/da"
 	"golang.org/x/sync/errgroup"
 	"net/http"
@@ -13,7 +14,6 @@ import (
 	"github.com/01builders/da-monitor/internal/evm"
 	"github.com/01builders/da-monitor/internal/evnode"
 	"github.com/01builders/da-monitor/internal/metrics"
-	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
@@ -143,73 +143,6 @@ func newClients(ctx context.Context, flags flagValues, logger zerolog.Logger) (*
 	return evnodeClient, evmClient, celestiaClient, nil
 }
 
-// monitorNodeDrift polls the reference and full nodes at the specified interval
-// and emits metrics for their block heights and drift
-func monitorNodeDrift(ctx context.Context, m *metrics.Metrics, referenceNode string, fullNodes []string, pollingInterval int, logger zerolog.Logger) error {
-	ticker := time.NewTicker(time.Duration(pollingInterval) * time.Second)
-	defer ticker.Stop()
-
-	logger.Info().
-		Str("reference_node", referenceNode).
-		Strs("full_nodes", fullNodes).
-		Int("polling_interval_sec", pollingInterval).
-		Msg("starting node drift monitoring")
-
-	for {
-		select {
-		case <-ctx.Done():
-			logger.Info().Msg("stopping node drift monitoring")
-			return ctx.Err()
-		case <-ticker.C:
-			// get reference node height
-			refHeight, err := getBlockHeight(ctx, referenceNode)
-			if err != nil {
-				logger.Error().Err(err).Str("endpoint", referenceNode).Msg("failed to get reference node block height")
-				continue
-			}
-
-			m.RecordReferenceBlockHeight(flags.chainID, referenceNode, refHeight)
-			logger.Info().Uint64("height", refHeight).Str("endpoint", referenceNode).Msg("recorded reference node height")
-
-			// get each full node height and calculate drift
-			for _, fullNode := range fullNodes {
-				targetHeight, err := getBlockHeight(ctx, fullNode)
-				if err != nil {
-					logger.Error().Err(err).Str("endpoint", fullNode).Msg("failed to get full node block height")
-					continue
-				}
-
-				m.RecordTargetBlockHeight(flags.chainID, fullNode, targetHeight)
-				m.RecordBlockHeightDrift(flags.chainID, fullNode, refHeight, targetHeight)
-
-				drift := int64(refHeight) - int64(targetHeight)
-				logger.Info().
-					Uint64("ref_height", refHeight).
-					Uint64("target_height", targetHeight).
-					Int64("drift", drift).
-					Str("endpoint", fullNode).
-					Msg("recorded full node height and drift")
-			}
-		}
-	}
-}
-
-// getBlockHeight queries an EVM RPC endpoint for its current block height
-func getBlockHeight(ctx context.Context, rpcURL string) (uint64, error) {
-	client, err := ethclient.DialContext(ctx, rpcURL)
-	if err != nil {
-		return 0, fmt.Errorf("failed to connect to %s: %w", rpcURL, err)
-	}
-	defer client.Close()
-
-	height, err := client.BlockNumber(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get block number from %s: %w", rpcURL, err)
-	}
-
-	return height, nil
-}
-
 func monitorAndVerifyDataAndHeaders(cmd *cobra.Command, args []string) error {
 	// Setup logger
 	logLevel := zerolog.InfoLevel
@@ -291,20 +224,18 @@ func monitorAndVerifyDataAndHeaders(cmd *cobra.Command, args []string) error {
 		return verifier.ProcessHeaders(streamCtx)
 	})
 
-	// start node drift monitoring if configured
-	if flags.referenceNode != "" && flags.fullNodes != "" {
-		fullNodeList := strings.Split(flags.fullNodes, ",")
-		// trim whitespace from each endpoint
-		for i := range fullNodeList {
-			fullNodeList[i] = strings.TrimSpace(fullNodeList[i])
+	g.Go(func() error {
+		if flags.referenceNode == "" || len(flags.fullNodes) == 0 {
+			logger.Info().
+				Str("reference_node", flags.referenceNode).
+				Strs("full_nodes", strings.Split(flags.fullNodes, ",")).
+				Msg("skipping node drift monitoring")
+			return nil
 		}
 
-		g.Go(func() error {
-			return monitorNodeDrift(retryCtx, m, flags.referenceNode, fullNodeList, flags.pollingInterval, logger)
-		})
-	} else {
-		logger.Info().Msg("node drift monitoring disabled (set --reference-node and --full-nodes to enable)")
-	}
+		fullNodeList := strings.Split(flags.fullNodes, ",")
+		return drift.Monitor(retryCtx, m, flags.chainID, flags.referenceNode, fullNodeList, flags.pollingInterval, logger)
+	})
 
 	return g.Wait()
 }
