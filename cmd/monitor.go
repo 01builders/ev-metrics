@@ -5,7 +5,6 @@ import (
 	"fmt"
 	coreda "github.com/evstack/ev-node/core/da"
 	"golang.org/x/sync/errgroup"
-	"math/big"
 	"net/http"
 	"os"
 	"time"
@@ -14,7 +13,6 @@ import (
 	"github.com/01builders/da-monitor/internal/evm"
 	"github.com/01builders/da-monitor/internal/evnode"
 	"github.com/01builders/da-monitor/internal/metrics"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
@@ -29,7 +27,6 @@ const (
 	flagDataNS            = "data-namespace"
 	flagDuration          = "duration"
 	flagVerbose           = "verbose"
-	flagBlockHeight       = "block-height"
 	flagPort              = "port"
 	flagChain             = "chain-id"
 	flagEnableMetrics     = "enable-metrics"
@@ -48,7 +45,6 @@ type flagValues struct {
 	dataNS            string
 	duration          int
 	verbose           bool
-	blockHeight       int64
 	port              int
 	chainID           string
 	enableMetrics     bool
@@ -72,8 +68,7 @@ func NewMonitorCmd() *cobra.Command {
 	cmd.Flags().StringVar(&flags.celestiaAuthToken, flagCelestiaAuthToken, "", "Celestia authentication token (optional)")
 	cmd.Flags().StringVar(&flags.headerNS, flagHeaderNS, "", "Header namespace (my_app_header_namespace)")
 	cmd.Flags().StringVar(&flags.dataNS, flagDataNS, "", "Data namespace (my_app_data_namespace)")
-	cmd.Flags().Int64Var(&flags.blockHeight, flagBlockHeight, 0, "Specific block height to verify")
-	cmd.Flags().IntVar(&flags.duration, flagDuration, 0, "Duration in seconds to stream (0 = infinite, ignored if block-height is set)")
+	cmd.Flags().IntVar(&flags.duration, flagDuration, 0, "Duration in seconds to stream (0 = infinite)")
 	cmd.Flags().BoolVar(&flags.verbose, flagVerbose, false, "Enable verbose logging")
 	cmd.Flags().BoolVar(&flags.enableMetrics, flagEnableMetrics, false, "Enable Prometheus metrics HTTP server")
 	cmd.Flags().IntVar(&flags.port, flagPort, 2112, "HTTP server port for metrics (only used if --enable-metrics is set)")
@@ -183,18 +178,6 @@ func monitorAndVerifyDataAndHeaders(cmd *cobra.Command, args []string) error {
 		logger.Info().Msg("Prometheus metrics server disabled (use --enable-metrics to enable)")
 	}
 
-	// If specific block height is provided, query it directly
-	if flags.blockHeight > 0 {
-		// Get header from EVM client
-		header, err := cfg.EvmClient.HeaderByNumber(ctx, big.NewInt(flags.blockHeight))
-		if err != nil {
-			return fmt.Errorf("failed to get header: %w", err)
-		}
-
-		verifyBlock(ctx, cfg.EVNodeClient, cfg.CelestiaClient, header, cfg.HeaderNS, cfg.DataNS, logger)
-		return nil
-	}
-
 	// Setup timeout if specified
 	streamCtx := ctx
 	if flags.duration > 0 {
@@ -231,69 +214,4 @@ func monitorAndVerifyDataAndHeaders(cmd *cobra.Command, args []string) error {
 	})
 
 	return g.Wait()
-}
-
-func verifyBlock(ctx context.Context, evnodeClient *evnode.Client, celestiaClient *celestia.Client, header *types.Header, headerNS, dataNS []byte, logger zerolog.Logger) {
-	blockHeight := header.Number.Uint64()
-
-	// check if block has transactions by comparing tx root to EmptyRootHash
-	// EmptyRootHash is the Keccak256 hash of the RLP encoding of an empty list
-	// this is a deterministic constant value that will always be the same for blocks with no transactions
-	hasTransactions := header.TxHash != types.EmptyRootHash
-
-	logger.Info().
-		Uint64("block_height", blockHeight).
-		Str("hash", header.Hash().Hex()).
-		Time("time", time.Unix(int64(header.Time), 0)).
-		Uint64("gas_used", header.GasUsed).
-		Bool("has_transactions", hasTransactions).
-		Msg("processing block")
-
-	// Get block with blob data from ev-node
-	blockResult, err := evnodeClient.GetBlockWithBlobs(ctx, blockHeight)
-	if err != nil {
-		logger.Error().Err(err).Uint64("block_height", blockHeight).Msg("failed to get block with blobs from ev-node")
-		return
-	}
-
-	logger.Info().
-		Uint64("header_da_height", blockResult.HeaderDaHeight).
-		Uint64("data_da_height", blockResult.DataDaHeight).
-		Int("header_blob_size", len(blockResult.HeaderBlob)).
-		Int("data_blob_size", len(blockResult.DataBlob)).
-		Msg("retrieved block data from ev-node")
-
-	// Verify header blob exists on Celestia
-	logger.Debug().Msg("verifying header blob with commitment...")
-	headerExists, err := celestiaClient.VerifyBlobAtHeight(ctx, blockResult.HeaderBlob, blockResult.HeaderDaHeight, headerNS)
-	if err != nil {
-		logger.Error().Err(err).Uint64("da_height", blockResult.HeaderDaHeight).Msg("failed to verify header blob")
-	} else if !headerExists {
-		logger.Error().
-			Uint64("da_height", blockResult.HeaderDaHeight).
-			Msg("ALERT: header blob NOT FOUND on Celestia - commitment does not match any blob at this height")
-	} else {
-		logger.Info().
-			Uint64("da_height", blockResult.HeaderDaHeight).
-			Msg("✓ header blob VERIFIED on Celestia - commitment matches")
-	}
-
-	// only verify data blob if block has transactions
-	if hasTransactions {
-		logger.Info().Msg("verifying data blob (accounting for SignedData wrapper)...")
-		dataExists, err := celestiaClient.VerifyDataBlobAtHeight(ctx, blockResult.DataBlob, blockResult.DataDaHeight, dataNS)
-		if err != nil {
-			logger.Error().Err(err).Uint64("da_height", blockResult.DataDaHeight).Msg("failed to verify data blob")
-		} else if !dataExists {
-			logger.Error().
-				Uint64("da_height", blockResult.DataDaHeight).
-				Msg("data blob NOT FOUND on Celestia")
-		} else {
-			logger.Info().
-				Uint64("da_height", blockResult.DataDaHeight).
-				Msg("data blob VERIFIED on Celestia")
-		}
-	} else {
-		logger.Debug().Msg("skipped data verification for empty block")
-	}
 }

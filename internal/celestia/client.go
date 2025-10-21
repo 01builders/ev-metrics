@@ -179,17 +179,19 @@ func (c *Client) VerifyDataBlobAtHeight(ctx context.Context, unwrappedDataBlob [
 			continue
 		}
 
+		equal := bytes.Equal(celestiaData, unwrappedDataBlob)
+
 		c.logger.Debug().
 			Int("blob_index", i).
 			Int("celestia_data_size", len(celestiaData)).
 			Int("evnode_data_size", len(unwrappedDataBlob)).
-			Bool("matches", bytes.Equal(celestiaData, unwrappedDataBlob)).
+			Bool("matches", equal).
 			Msg("comparing unwrapped Data")
 
-		if bytes.Equal(celestiaData, unwrappedDataBlob) {
+		if equal {
 			c.logger.Info().
 				Int("blob_index", i).
-				Msg("found matching Data (unwrapped from SignedData)")
+				Msg("found matching Data")
 			return true, nil
 		}
 	}
