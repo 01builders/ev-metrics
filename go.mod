@@ -1,4 +1,4 @@
-module github.com/01builders/da-monitor
+module github.com/01builders/ev-metrics
 
 go 1.24.6
 

@@ -16,14 +16,14 @@ Data Availability monitoring tool for rollups using Celestia DA. This tool monit
 
 ```bash
 # Clone the repository
-git clone https://github.com/01builders/da-monitor.git
-cd da-monitor
+git clone https://github.com/01builders/ev-metrics.git
+cd ev-metrics
 
 # Install dependencies
 go mod download
 
 # Build the binary
-go build -o da-monitor
+go build -o ev-metrics
 ```
 
 ### Running the Monitor
@@ -31,7 +31,7 @@ go build -o da-monitor
 The monitor command streams EVM block headers and verifies DA submission on Celestia:
 
 ```bash
-./da-monitor monitor \
+./ev-metrics monitor \
   --header-namespace collect_testnet_header \
   --data-namespace collect_testnet_data
 ```
@@ -40,7 +40,7 @@ The monitor command streams EVM block headers and verifies DA submission on Cele
 ### Enable Prometheus Metrics
 
 ```bash
-./da-monitor monitor \
+./ev-metrics monitor \
   --header-namespace collect_testnet_header \
   --data-namespace collect_testnet_data \
   --enable-metrics \
@@ -72,7 +72,7 @@ Metrics will be available at `http://localhost:2112/metrics`
 ### Example with Custom Endpoints
 
 ```bash
-./da-monitor monitor \
+./ev-metrics monitor \
   --header-namespace collect_testnet_header \
   --data-namespace collect_testnet_data \
   --evnode-addr "http://my-evnode:7331" \

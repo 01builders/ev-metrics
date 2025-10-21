@@ -6,8 +6,8 @@ help:
 	@echo "  make lint         - run linters on the codebase"
 	@echo "  make lint-fix     - run linters and auto-fix issues where possible"
 	@echo "  make test         - run all tests"
-	@echo "  make build        - build the da-monitor binary"
-	@echo "  make install      - install da-monitor to GOPATH/bin"
+	@echo "  make build        - build the ev-metrics binary"
+	@echo "  make install      - install ev-metrics to GOPATH/bin"
 	@echo "  make clean        - remove build artifacts"
 
 # run golangci-lint on the codebase
@@ -27,15 +27,15 @@ test:
 
 # build the binary
 build:
-	@echo "Building da-monitor..."
-	go build -o da-monitor
+	@echo "Building ev-metrics..."
+	go build -o ev-metrics
 
 # install to GOPATH/bin
 install:
-	@echo "Installing da-monitor..."
+	@echo "Installing ev-metrics..."
 	go install
 
 # clean build artifacts
 clean:
 	@echo "Cleaning build artifacts..."
-	rm -f da-monitor
+	rm -f ev-metrics

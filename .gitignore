@@ -1,5 +1,5 @@
 .idea
 vendor
 build
-da-monitor
+ev-metrics
 .gocache

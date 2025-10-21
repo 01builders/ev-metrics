@@ -2,10 +2,10 @@ package cmd
 
 import (
 	"context"
-	"github.com/01builders/da-monitor/internal/celestia"
-	"github.com/01builders/da-monitor/internal/evm"
-	"github.com/01builders/da-monitor/internal/evnode"
-	"github.com/01builders/da-monitor/internal/metrics"
+	"github.com/01builders/ev-metrics/internal/celestia"
+	"github.com/01builders/ev-metrics/internal/evm"
+	"github.com/01builders/ev-metrics/internal/evnode"
+	"github.com/01builders/ev-metrics/internal/metrics"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/rs/zerolog"
 	"time"

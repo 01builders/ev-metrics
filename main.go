@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/01builders/da-monitor/cmd"
+	"github.com/01builders/ev-metrics/cmd"
 	"github.com/spf13/cobra"
 )
 
 func main() {
 	rootCmd := &cobra.Command{
-		Use:   "da-monitor",
+		Use:   "ev-metrics",
 		Short: "DA monitoring tool for ev-node data availability",
 	}
 
