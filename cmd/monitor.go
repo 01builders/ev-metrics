@@ -13,9 +13,11 @@ import (
 	"github.com/01builders/da-monitor/internal/evm"
 	"github.com/01builders/da-monitor/internal/evnode"
 	"github.com/01builders/da-monitor/internal/metrics"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
+	"strings"
 )
 
 const (
@@ -30,6 +32,9 @@ const (
 	flagPort              = "port"
 	flagChain             = "chain-id"
 	flagEnableMetrics     = "enable-metrics"
+	flagReferenceNode     = "reference-node"
+	flagFullNodes         = "full-nodes"
+	flagPollingInterval   = "polling-interval"
 
 	metricsPath = "/metrics"
 )
@@ -48,6 +53,9 @@ type flagValues struct {
 	port              int
 	chainID           string
 	enableMetrics     bool
+	referenceNode     string
+	fullNodes         string
+	pollingInterval   int
 }
 
 func NewMonitorCmd() *cobra.Command {
@@ -73,6 +81,9 @@ func NewMonitorCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&flags.enableMetrics, flagEnableMetrics, false, "Enable Prometheus metrics HTTP server")
 	cmd.Flags().IntVar(&flags.port, flagPort, 2112, "HTTP server port for metrics (only used if --enable-metrics is set)")
 	cmd.Flags().StringVar(&flags.chainID, flagChain, "testnet", "chainID identifier for metrics labels")
+	cmd.Flags().StringVar(&flags.referenceNode, flagReferenceNode, "", "Reference node RPC endpoint URL (sequencer) for drift monitoring")
+	cmd.Flags().StringVar(&flags.fullNodes, flagFullNodes, "", "Comma-separated list of full node RPC endpoint URLs for drift monitoring")
+	cmd.Flags().IntVar(&flags.pollingInterval, flagPollingInterval, 10, "Polling interval in seconds for checking node block heights (default: 10)")
 
 	if err := cmd.MarkFlagRequired(flagHeaderNS); err != nil {
 		panic(err)
@@ -130,6 +141,73 @@ func newClients(ctx context.Context, flags flagValues, logger zerolog.Logger) (*
 		return nil, nil, nil, fmt.Errorf("failed to connect to Celestia: %w", err)
 	}
 	return evnodeClient, evmClient, celestiaClient, nil
+}
+
+// monitorNodeDrift polls the reference and full nodes at the specified interval
+// and emits metrics for their block heights and drift
+func monitorNodeDrift(ctx context.Context, m *metrics.Metrics, referenceNode string, fullNodes []string, pollingInterval int, logger zerolog.Logger) error {
+	ticker := time.NewTicker(time.Duration(pollingInterval) * time.Second)
+	defer ticker.Stop()
+
+	logger.Info().
+		Str("reference_node", referenceNode).
+		Strs("full_nodes", fullNodes).
+		Int("polling_interval_sec", pollingInterval).
+		Msg("starting node drift monitoring")
+
+	for {
+		select {
+		case <-ctx.Done():
+			logger.Info().Msg("stopping node drift monitoring")
+			return ctx.Err()
+		case <-ticker.C:
+			// get reference node height
+			refHeight, err := getBlockHeight(ctx, referenceNode)
+			if err != nil {
+				logger.Error().Err(err).Str("endpoint", referenceNode).Msg("failed to get reference node block height")
+				continue
+			}
+
+			m.RecordReferenceBlockHeight(flags.chainID, referenceNode, refHeight)
+			logger.Info().Uint64("height", refHeight).Str("endpoint", referenceNode).Msg("recorded reference node height")
+
+			// get each full node height and calculate drift
+			for _, fullNode := range fullNodes {
+				targetHeight, err := getBlockHeight(ctx, fullNode)
+				if err != nil {
+					logger.Error().Err(err).Str("endpoint", fullNode).Msg("failed to get full node block height")
+					continue
+				}
+
+				m.RecordTargetBlockHeight(flags.chainID, fullNode, targetHeight)
+				m.RecordBlockHeightDrift(flags.chainID, fullNode, refHeight, targetHeight)
+
+				drift := int64(refHeight) - int64(targetHeight)
+				logger.Info().
+					Uint64("ref_height", refHeight).
+					Uint64("target_height", targetHeight).
+					Int64("drift", drift).
+					Str("endpoint", fullNode).
+					Msg("recorded full node height and drift")
+			}
+		}
+	}
+}
+
+// getBlockHeight queries an EVM RPC endpoint for its current block height
+func getBlockHeight(ctx context.Context, rpcURL string) (uint64, error) {
+	client, err := ethclient.DialContext(ctx, rpcURL)
+	if err != nil {
+		return 0, fmt.Errorf("failed to connect to %s: %w", rpcURL, err)
+	}
+	defer client.Close()
+
+	height, err := client.BlockNumber(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get block number from %s: %w", rpcURL, err)
+	}
+
+	return height, nil
 }
 
 func monitorAndVerifyDataAndHeaders(cmd *cobra.Command, args []string) error {
@@ -212,6 +290,21 @@ func monitorAndVerifyDataAndHeaders(cmd *cobra.Command, args []string) error {
 	g.Go(func() error {
 		return verifier.ProcessHeaders(streamCtx)
 	})
+
+	// start node drift monitoring if configured
+	if flags.referenceNode != "" && flags.fullNodes != "" {
+		fullNodeList := strings.Split(flags.fullNodes, ",")
+		// trim whitespace from each endpoint
+		for i := range fullNodeList {
+			fullNodeList[i] = strings.TrimSpace(fullNodeList[i])
+		}
+
+		g.Go(func() error {
+			return monitorNodeDrift(retryCtx, m, flags.referenceNode, fullNodeList, flags.pollingInterval, logger)
+		})
+	} else {
+		logger.Info().Msg("node drift monitoring disabled (set --reference-node and --full-nodes to enable)")
+	}
 
 	return g.Wait()
 }
