@@ -133,6 +133,8 @@ func (v *BlockVerifier) retryBlock(ctx context.Context, header *types.Header) {
 			continue
 		}
 
+		v.metrics.RecordSubmissionDaHeight(v.chainID, namespace, daHeight)
+
 		blockResultWithBlobs, err := v.evnodeClient.GetBlockWithBlobs(ctx, blockHeight)
 		if err != nil {
 			logger.Warn().Err(err).Int("attempt", retries).Msg("failed to re-query block from ev-node")

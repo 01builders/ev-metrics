@@ -138,11 +138,11 @@ func TestMetrics_RecordMissingBlock(t *testing.T) {
 
 func TestMetrics_RemoveVerifiedBlock(t *testing.T) {
 	tests := []struct {
-		name            string
-		setupBlocks     []blockToRecord
-		removeBlock     blockToRemove
-		expectedRanges  []expectedRange
-		expectNoRanges  bool
+		name           string
+		setupBlocks    []blockToRecord
+		removeBlock    blockToRemove
+		expectedRanges []expectedRange
+		expectNoRanges bool
 	}{
 		{
 			name: "remove single block range - deletes range",
@@ -318,6 +318,101 @@ func TestMetrics_RemoveVerifiedBlock(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMetrics_RecordSubmissionDaHeight(t *testing.T) {
+
+	for _, tc := range []struct {
+		name           string
+		daHeight       uint64
+		submissionType string
+		setup          func(m *Metrics)
+		assertionFn    func(t *testing.T, value float64)
+	}{
+		{
+			"header: record first submission DA height",
+			100,
+			"header",
+			nil,
+			func(t *testing.T, value float64) {
+				require.Equal(t, float64(100), value, "should have recorded first submission DA height")
+			},
+		},
+		{
+			"header: can't record lower height",
+			100,
+			"header",
+			func(m *Metrics) {
+				m.RecordSubmissionDaHeight("testchain", "header", 105)
+			},
+			func(t *testing.T, value float64) {
+				require.Equal(t, float64(105), value, "should not have overridden with lower DA height")
+			},
+		},
+		{
+			"header: jump in height",
+			10000,
+			"header",
+			func(m *Metrics) {
+				m.RecordSubmissionDaHeight("testchain", "header", 100)
+			},
+			func(t *testing.T, value float64) {
+				require.Equal(t, float64(10000), value, "should have been able to override a higher DA height")
+			},
+		},
+		{
+			"data: record first submission DA height",
+			100,
+			"data",
+			nil,
+			func(t *testing.T, value float64) {
+				require.Equal(t, float64(100), value, "should have recorded first submission DA height")
+			},
+		},
+		{
+			"data: can't record lower height",
+			100,
+			"data",
+			func(m *Metrics) {
+				m.RecordSubmissionDaHeight("testchain", "data", 105)
+			},
+			func(t *testing.T, value float64) {
+				require.Equal(t, float64(105), value, "should not have overridden with lower DA height")
+			},
+		},
+		{
+			"data: jump in height",
+			10000,
+			"data",
+			func(m *Metrics) {
+				m.RecordSubmissionDaHeight("testchain", "data", 100)
+			},
+			func(t *testing.T, value float64) {
+				require.Equal(t, float64(10000), value, "should have been able to override a higher DA height")
+			},
+		},
+	} {
+		reg := prometheus.NewRegistry()
+		m := NewWithRegistry("test", reg)
+
+		// perform any test setup before recording the submission height
+		if tc.setup != nil {
+			tc.setup(m)
+		}
+
+		m.RecordSubmissionDaHeight("testchain", tc.submissionType, tc.daHeight)
+
+		// fetch the value of the metric for assertion.
+		value := getMetricValue(t, reg, "test_submission_da_height", map[string]string{
+			"chain_id":        "testchain",
+			"submission_type": tc.submissionType,
+		})
+
+		t.Run(tc.name, func(t *testing.T) {
+			tc.assertionFn(t, value)
+		})
+	}
+
 }
 
 func TestMetrics_ComplexScenario(t *testing.T) {
