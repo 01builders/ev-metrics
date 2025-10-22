@@ -197,11 +197,8 @@ func monitorAndVerifyDataAndHeaders(cmd *cobra.Command, args []string) error {
 	g.Go(func() error {
 		return verifier.VerifyHeadersAndData(ctx)
 	})
-	g.Go(func() error {
-		return verifier.ProcessHeaders(ctx)
-	})
 
-	if flags.referenceNode == "" || len(flags.fullNodes) == 0 {
+	if flags.referenceNode != "" && flags.fullNodes != "" {
 		g.Go(func() error {
 			fullNodeList := strings.Split(flags.fullNodes, ",")
 			return drift.Monitor(ctx, m, flags.chainID, flags.referenceNode, fullNodeList, flags.pollingInterval, logger)

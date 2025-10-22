@@ -11,12 +11,6 @@ import (
 	"time"
 )
 
-// daVerificationStatus tracks a block pending verification
-type daVerificationStatus struct {
-	blockHeight uint64
-	namespace   string // "header" or "data"
-}
-
 // BlockVerifier handles verification of blocks against Celestia DA
 type BlockVerifier struct {
 	evnodeClient   *evnode.Client
@@ -27,9 +21,6 @@ type BlockVerifier struct {
 	metrics        *metrics.Metrics
 	chainID        string
 	logger         zerolog.Logger
-
-	// internal channels for retry logic
-	unverifiedCh chan *daVerificationStatus
 }
 
 // NewBlockVerifier creates a new BlockVerifier
@@ -51,33 +42,11 @@ func NewBlockVerifier(
 		metrics:        metrics,
 		chainID:        chainID,
 		logger:         logger,
-		unverifiedCh:   make(chan *daVerificationStatus, 100),
 	}
 }
 
 // VerifyHeadersAndData begins the background retry processor
 func (v *BlockVerifier) VerifyHeadersAndData(ctx context.Context) error {
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-			// when a new unverified status is received, spawn a goroutine to handle retries.
-		case status := <-v.unverifiedCh:
-			// spawn a goroutine to handle this block's retries
-			go v.retryBlock(ctx, status)
-		}
-	}
-}
-
-func (v *BlockVerifier) onVerified(status *daVerificationStatus, verified bool) {
-	if verified {
-		v.metrics.RemoveVerifiedBlock(v.chainID, status.namespace, status.blockHeight)
-	} else {
-		v.metrics.RecordMissingBlock(v.chainID, status.namespace, status.blockHeight)
-	}
-}
-
-func (v *BlockVerifier) ProcessHeaders(ctx context.Context) error {
 	headers := make(chan *types.Header, 10)
 	sub, err := v.evmClient.SubscribeNewHead(ctx, headers)
 	if err != nil {
@@ -85,60 +54,46 @@ func (v *BlockVerifier) ProcessHeaders(ctx context.Context) error {
 	}
 	defer sub.Unsubscribe()
 
-	headerCount := 0
 	for {
 		select {
 		case <-ctx.Done():
-			v.logger.Info().Int("headers_processed", headerCount).Msg("stream completed")
 			return nil
+			// when a new unverified status is received, spawn a goroutine to handle retries.
 		case header := <-headers:
-			headerCount++
-			v.enqueueHeader(header)
+			// spawn a goroutine to handle this block's retries
+			go v.retryBlock(ctx, header)
 		}
 	}
 }
 
-// enqueueHeader queues a block for verification.
-func (v *BlockVerifier) enqueueHeader(header *types.Header) {
+func (v *BlockVerifier) onVerified(namespace string, blockHeight uint64, verified bool) {
+	if verified {
+		v.metrics.RemoveVerifiedBlock(v.chainID, namespace, blockHeight)
+	} else {
+		v.metrics.RecordMissingBlock(v.chainID, namespace, blockHeight)
+	}
+}
+
+// retryBlock attempts to re-verify a DA height for a given block status.
+func (v *BlockVerifier) retryBlock(ctx context.Context, header *types.Header) {
 	blockHeight := header.Number.Uint64()
 
 	// check if block has transactions
 	hasTransactions := header.TxHash != types.EmptyRootHash
 
-	v.logger.Info().
-		Uint64("block_height", blockHeight).
+	namespace := "header"
+	if hasTransactions {
+		namespace = "data"
+	}
+
+	logger := v.logger.With().Str("namespace", namespace).Uint64("block_height", blockHeight).Logger()
+	logger.Info().
 		Str("hash", header.Hash().Hex()).
 		Time("time", time.Unix(int64(header.Time), 0)).
 		Uint64("gas_used", header.GasUsed).
 		Bool("has_transactions", hasTransactions).
 		Msg("processing block")
 
-	// queue header verification
-	v.unverifiedCh <- &daVerificationStatus{
-		blockHeight: blockHeight,
-		namespace:   "header",
-	}
-
-	// queue data verification if block has transactions
-	if hasTransactions {
-		v.unverifiedCh <- &daVerificationStatus{
-			blockHeight: blockHeight,
-			namespace:   "data",
-		}
-	}
-}
-
-// statusLogger returns a logger pre-populated with status fields
-func (v *BlockVerifier) statusLogger(status *daVerificationStatus) zerolog.Logger {
-	return v.logger.With().
-		Str("namespace", status.namespace).
-		Uint64("block_height", status.blockHeight).
-		Logger()
-}
-
-// retryBlock attempts to re-verify a DA height for a given block status.
-func (v *BlockVerifier) retryBlock(ctx context.Context, status *daVerificationStatus) {
-	logger := v.statusLogger(status)
 	startTime := time.Now()
 
 	// exponential backoff intervals matching observed DA submission timing
@@ -162,14 +117,14 @@ func (v *BlockVerifier) retryBlock(ctx context.Context, status *daVerificationSt
 			// proceed with retry
 		}
 
-		blockResult, err := v.evnodeClient.GetBlock(ctx, status.blockHeight)
+		blockResult, err := v.evnodeClient.GetBlock(ctx, blockHeight)
 		if err != nil {
 			logger.Warn().Err(err).Int("attempt", retries).Msg("failed to re-query block from ev-node")
 			continue
 		}
 
 		daHeight := blockResult.HeaderDaHeight
-		if status.namespace == "data" {
+		if namespace == "data" {
 			daHeight = blockResult.DataDaHeight
 		}
 
@@ -178,13 +133,13 @@ func (v *BlockVerifier) retryBlock(ctx context.Context, status *daVerificationSt
 			continue
 		}
 
-		blockResultWithBlobs, err := v.evnodeClient.GetBlockWithBlobs(ctx, status.blockHeight)
+		blockResultWithBlobs, err := v.evnodeClient.GetBlockWithBlobs(ctx, blockHeight)
 		if err != nil {
 			logger.Warn().Err(err).Int("attempt", retries).Msg("failed to re-query block from ev-node")
 			continue
 		}
 
-		switch status.namespace {
+		switch namespace {
 		case "header":
 			verified, err := v.celestiaClient.VerifyBlobAtHeight(ctx, blockResultWithBlobs.HeaderBlob, daHeight, v.headerNS)
 
@@ -198,7 +153,7 @@ func (v *BlockVerifier) retryBlock(ctx context.Context, status *daVerificationSt
 					Uint64("da_height", daHeight).
 					Dur("duration", time.Since(startTime)).
 					Msg("header blob verified on Celestia")
-				v.onVerified(status, true)
+				v.onVerified(namespace, blockHeight, true)
 				return
 			}
 
@@ -208,7 +163,7 @@ func (v *BlockVerifier) retryBlock(ctx context.Context, status *daVerificationSt
 					Uint64("da_height", daHeight).
 					Dur("duration", time.Since(startTime)).
 					Msg("max retries reached - header blob not verified")
-				v.onVerified(status, false)
+				v.onVerified(namespace, blockHeight, false)
 				return
 			}
 			logger.Warn().Uint64("da_height", daHeight).Int("attempt", retries).Msg("verification failed, will retry")
@@ -218,7 +173,7 @@ func (v *BlockVerifier) retryBlock(ctx context.Context, status *daVerificationSt
 				logger.Info().
 					Dur("duration", time.Since(startTime)).
 					Msg("empty data block - no verification needed")
-				v.onVerified(status, true)
+				v.onVerified(namespace, blockHeight, true)
 				return
 			}
 
@@ -234,7 +189,7 @@ func (v *BlockVerifier) retryBlock(ctx context.Context, status *daVerificationSt
 					Uint64("da_height", daHeight).
 					Dur("duration", time.Since(startTime)).
 					Msg("data blob verified on Celestia")
-				v.onVerified(status, true)
+				v.onVerified(namespace, blockHeight, true)
 				return
 			}
 
@@ -244,18 +199,18 @@ func (v *BlockVerifier) retryBlock(ctx context.Context, status *daVerificationSt
 					Uint64("da_height", daHeight).
 					Dur("duration", time.Since(startTime)).
 					Msg("max retries reached - data blob not verified")
-				v.onVerified(status, false)
+				v.onVerified(namespace, blockHeight, false)
 				return
 			}
 			logger.Warn().Uint64("da_height", daHeight).Int("attempt", retries).Msg("verification failed, will retry")
 
 		default:
-			logger.Error().Str("namespace", status.namespace).Msg("unknown namespace type")
+			logger.Error().Str("namespace", namespace).Msg("unknown namespace type")
 			return
 		}
 	}
 
 	// if loop completes without success, log final error
 	logger.Error().Msg("max retries exhausted - ALERT: failed to verify block")
-	v.onVerified(status, false)
+	v.onVerified(namespace, blockHeight, false)
 }
