@@ -66,8 +66,9 @@ func (v *BlockVerifier) VerifyHeadersAndData(ctx context.Context) error {
 	}
 }
 
-func (v *BlockVerifier) onVerified(namespace string, blockHeight uint64, verified bool) {
+func (v *BlockVerifier) onVerified(namespace string, blockHeight, daHeight uint64, verified bool) {
 	if verified {
+		v.metrics.RecordSubmissionDaHeight(v.chainID, namespace, daHeight)
 		v.metrics.RemoveVerifiedBlock(v.chainID, namespace, blockHeight)
 	} else {
 		v.metrics.RecordMissingBlock(v.chainID, namespace, blockHeight)
@@ -153,7 +154,7 @@ func (v *BlockVerifier) retryBlock(ctx context.Context, header *types.Header) {
 					Uint64("da_height", daHeight).
 					Dur("duration", time.Since(startTime)).
 					Msg("header blob verified on Celestia")
-				v.onVerified(namespace, blockHeight, true)
+				v.onVerified(namespace, blockHeight, daHeight, true)
 				return
 			}
 
@@ -163,7 +164,7 @@ func (v *BlockVerifier) retryBlock(ctx context.Context, header *types.Header) {
 					Uint64("da_height", daHeight).
 					Dur("duration", time.Since(startTime)).
 					Msg("max retries reached - header blob not verified")
-				v.onVerified(namespace, blockHeight, false)
+				v.onVerified(namespace, blockHeight, daHeight, false)
 				return
 			}
 			logger.Warn().Uint64("da_height", daHeight).Int("attempt", retries).Msg("verification failed, will retry")
@@ -173,7 +174,7 @@ func (v *BlockVerifier) retryBlock(ctx context.Context, header *types.Header) {
 				logger.Info().
 					Dur("duration", time.Since(startTime)).
 					Msg("empty data block - no verification needed")
-				v.onVerified(namespace, blockHeight, true)
+				v.onVerified(namespace, blockHeight, daHeight, true)
 				return
 			}
 
@@ -189,7 +190,7 @@ func (v *BlockVerifier) retryBlock(ctx context.Context, header *types.Header) {
 					Uint64("da_height", daHeight).
 					Dur("duration", time.Since(startTime)).
 					Msg("data blob verified on Celestia")
-				v.onVerified(namespace, blockHeight, true)
+				v.onVerified(namespace, blockHeight, daHeight, true)
 				return
 			}
 
@@ -199,7 +200,7 @@ func (v *BlockVerifier) retryBlock(ctx context.Context, header *types.Header) {
 					Uint64("da_height", daHeight).
 					Dur("duration", time.Since(startTime)).
 					Msg("max retries reached - data blob not verified")
-				v.onVerified(namespace, blockHeight, false)
+				v.onVerified(namespace, blockHeight, daHeight, false)
 				return
 			}
 			logger.Warn().Uint64("da_height", daHeight).Int("attempt", retries).Msg("verification failed, will retry")
@@ -212,5 +213,5 @@ func (v *BlockVerifier) retryBlock(ctx context.Context, header *types.Header) {
 
 	// if loop completes without success, log final error
 	logger.Error().Msg("max retries exhausted - ALERT: failed to verify block")
-	v.onVerified(namespace, blockHeight, false)
+	v.onVerified(namespace, blockHeight, 0, false)
 }

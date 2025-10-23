@@ -7,6 +7,9 @@ on:
       - master
     tags:
       - 'v*'
+  pull_request:
+    branches:
+      - main
 
 env:
   REGISTRY: ghcr.io
@@ -44,8 +47,8 @@ jobs:
           tags: |
             type=ref,event=branch
             type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
             type=sha
 
       - name: Build and push
