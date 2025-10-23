@@ -208,22 +208,26 @@ func (c *Client) VerifyDataBlobAtHeight(ctx context.Context, unwrappedDataBlob [
 	return false, nil
 }
 
+type Header struct {
+	Time string `json:"time"`
+}
+
+type HeaderResult struct {
+	Header Header `json:"header"`
+}
+
+type RPCError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+type RPCResponse struct {
+	Result HeaderResult `json:"result"`
+	Error  *RPCError    `json:"error"`
+}
+
 // GetBlockTimestamp retrieves the timestamp of a celestia da block at the given height
 func (c *Client) GetBlockTimestamp(ctx context.Context, daHeight uint64) (time.Time, error) {
-	type headerResult struct {
-		Header struct {
-			Time string `json:"time"`
-		} `json:"header"`
-	}
-
-	type rpcResponse struct {
-		Result headerResult `json:"result"`
-		Error  *struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-
 	payload := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -257,7 +261,7 @@ func (c *Client) GetBlockTimestamp(ctx context.Context, daHeight uint64) (time.T
 		return time.Time{}, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	var rpcResp rpcResponse
+	var rpcResp RPCResponse
 	if err := json.Unmarshal(respBody, &rpcResp); err != nil {
 		return time.Time{}, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
