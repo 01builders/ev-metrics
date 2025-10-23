@@ -61,22 +61,23 @@ func (v *BlockVerifier) VerifyHeadersAndData(ctx context.Context) error {
 			// when a new unverified status is received, spawn a goroutine to handle retries.
 		case header := <-headers:
 			// spawn a goroutine to handle this block's retries
-			go v.retryBlock(ctx, header)
+			go v.verifyBlock(ctx, header)
 		}
 	}
 }
 
-func (v *BlockVerifier) onVerified(namespace string, blockHeight, daHeight uint64, verified bool) {
+func (v *BlockVerifier) onVerified(namespace string, blockHeight, daHeight uint64, verified bool, submissionDuration time.Duration) {
 	if verified {
 		v.metrics.RecordSubmissionDaHeight(v.chainID, namespace, daHeight)
 		v.metrics.RemoveVerifiedBlock(v.chainID, namespace, blockHeight)
+		v.metrics.RecordSubmissionDuration(v.chainID, namespace, submissionDuration)
 	} else {
 		v.metrics.RecordMissingBlock(v.chainID, namespace, blockHeight)
 	}
 }
 
-// retryBlock attempts to re-verify a DA height for a given block status.
-func (v *BlockVerifier) retryBlock(ctx context.Context, header *types.Header) {
+// verifyBlock attempts to verify a DA height for a given block status.
+func (v *BlockVerifier) verifyBlock(ctx context.Context, header *types.Header) {
 	blockHeight := header.Number.Uint64()
 
 	// check if block has transactions
@@ -96,6 +97,7 @@ func (v *BlockVerifier) retryBlock(ctx context.Context, header *types.Header) {
 		Msg("processing block")
 
 	startTime := time.Now()
+	blockTime := time.Unix(int64(header.Time), 0)
 
 	// exponential backoff intervals matching observed DA submission timing
 	retryIntervals := []time.Duration{
@@ -136,9 +138,18 @@ func (v *BlockVerifier) retryBlock(ctx context.Context, header *types.Header) {
 
 		blockResultWithBlobs, err := v.evnodeClient.GetBlockWithBlobs(ctx, blockHeight)
 		if err != nil {
-			logger.Warn().Err(err).Int("attempt", retries).Msg("failed to re-query block from ev-node")
+			logger.Warn().Err(err).Int("attempt", retries).Msg("failed to query block from ev-node")
 			continue
 		}
+
+		daBlockTime, err := v.celestiaClient.GetBlockTimestamp(ctx, daHeight)
+		if err != nil {
+			logger.Warn().Err(err).Uint64("da_height", daHeight).Msg("failed to get da block timestamp")
+			continue
+		}
+
+		// the time taken from block time to DA inclusion time.
+		submissionDuration := daBlockTime.Sub(blockTime)
 
 		switch namespace {
 		case "header":
@@ -154,7 +165,7 @@ func (v *BlockVerifier) retryBlock(ctx context.Context, header *types.Header) {
 					Uint64("da_height", daHeight).
 					Dur("duration", time.Since(startTime)).
 					Msg("header blob verified on Celestia")
-				v.onVerified(namespace, blockHeight, daHeight, true)
+				v.onVerified(namespace, blockHeight, daHeight, true, submissionDuration)
 				return
 			}
 
@@ -164,7 +175,7 @@ func (v *BlockVerifier) retryBlock(ctx context.Context, header *types.Header) {
 					Uint64("da_height", daHeight).
 					Dur("duration", time.Since(startTime)).
 					Msg("max retries reached - header blob not verified")
-				v.onVerified(namespace, blockHeight, daHeight, false)
+				v.onVerified(namespace, blockHeight, daHeight, false, 0)
 				return
 			}
 			logger.Warn().Uint64("da_height", daHeight).Int("attempt", retries).Msg("verification failed, will retry")
@@ -174,7 +185,7 @@ func (v *BlockVerifier) retryBlock(ctx context.Context, header *types.Header) {
 				logger.Info().
 					Dur("duration", time.Since(startTime)).
 					Msg("empty data block - no verification needed")
-				v.onVerified(namespace, blockHeight, daHeight, true)
+				v.onVerified(namespace, blockHeight, daHeight, true, submissionDuration)
 				return
 			}
 
@@ -190,7 +201,7 @@ func (v *BlockVerifier) retryBlock(ctx context.Context, header *types.Header) {
 					Uint64("da_height", daHeight).
 					Dur("duration", time.Since(startTime)).
 					Msg("data blob verified on Celestia")
-				v.onVerified(namespace, blockHeight, daHeight, true)
+				v.onVerified(namespace, blockHeight, daHeight, true, submissionDuration)
 				return
 			}
 
@@ -200,7 +211,7 @@ func (v *BlockVerifier) retryBlock(ctx context.Context, header *types.Header) {
 					Uint64("da_height", daHeight).
 					Dur("duration", time.Since(startTime)).
 					Msg("max retries reached - data blob not verified")
-				v.onVerified(namespace, blockHeight, daHeight, false)
+				v.onVerified(namespace, blockHeight, daHeight, false, 0)
 				return
 			}
 			logger.Warn().Uint64("da_height", daHeight).Int("attempt", retries).Msg("verification failed, will retry")
@@ -213,5 +224,5 @@ func (v *BlockVerifier) retryBlock(ctx context.Context, header *types.Header) {
 
 	// if loop completes without success, log final error
 	logger.Error().Msg("max retries exhausted - ALERT: failed to verify block")
-	v.onVerified(namespace, blockHeight, 0, false)
+	v.onVerified(namespace, blockHeight, 0, false, 0)
 }

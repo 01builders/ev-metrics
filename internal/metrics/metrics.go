@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -23,6 +24,8 @@ type Metrics struct {
 	CurrentBlockHeight *prometheus.GaugeVec
 	// BlockHeightDrift tracks the drift between reference and target endpoints for a specific node.
 	BlockHeightDrift *prometheus.GaugeVec
+	// SubmissionDuration tracks DA blob submission duration quantiles over a rolling window.
+	SubmissionDuration *prometheus.SummaryVec
 	// SubmissionDaHeight tracks the DA height at which blocks were submitted.
 	SubmissionDaHeight *prometheus.GaugeVec
 
@@ -95,6 +98,22 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 				Help:      "block height difference between reference and target endpoints (positive = target behind, negative = target ahead)",
 			},
 			[]string{"chain_id", "target_endpoint"},
+		),
+		SubmissionDuration: factory.NewSummaryVec(
+			prometheus.SummaryOpts{
+				Namespace: namespace,
+				Name:      "submission_duration_seconds",
+				Help:      "da blob submission duration from block creation to da availability",
+				Objectives: map[float64]float64{
+					0.5:  0.05,
+					0.9:  0.01,
+					0.95: 0.01,
+					0.99: 0.001,
+				},
+				MaxAge:     60 * time.Second,
+				AgeBuckets: 6,
+			},
+			[]string{"chain_id", "type"},
 		),
 		SubmissionDaHeight: factory.NewGaugeVec(
 			prometheus.GaugeOpts{
@@ -330,4 +349,9 @@ func (m *Metrics) RecordCurrentBlockHeight(chainID, endpoint string, height uint
 func (m *Metrics) RecordBlockHeightDrift(chainID, targetEndpoint string, referenceHeight, targetHeight uint64) {
 	drift := int64(referenceHeight) - int64(targetHeight)
 	m.BlockHeightDrift.WithLabelValues(chainID, targetEndpoint).Set(float64(drift))
+}
+
+// RecordSubmissionDuration records the da submission duration for a given submission type
+func (m *Metrics) RecordSubmissionDuration(chainID, submissionType string, duration time.Duration) {
+	m.SubmissionDuration.WithLabelValues(chainID, submissionType).Observe(duration.Seconds())
 }
