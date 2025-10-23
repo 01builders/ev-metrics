@@ -26,6 +26,12 @@ type Metrics struct {
 	BlockHeightDrift *prometheus.GaugeVec
 	// SubmissionDuration tracks DA blob submission duration quantiles over a rolling window.
 	SubmissionDuration *prometheus.SummaryVec
+	// SubmissionDaHeight tracks the DA height at which blocks were submitted.
+	SubmissionDaHeight *prometheus.GaugeVec
+
+	// internal tracking to ensure we only record increasing DA heights
+	latestHeaderDaHeight uint64
+	latestDataDaHeight   uint64
 
 	mu     sync.Mutex
 	ranges map[string][]*blockRange // key: blobType -> sorted slice of ranges
@@ -109,7 +115,36 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 			},
 			[]string{"chain_id", "type"},
 		),
+		SubmissionDaHeight: factory.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Name:      "submission_da_height",
+				Help:      "latest DA height for header and data submissions",
+			},
+			[]string{"chain_id", "type"},
+		),
 		ranges: make(map[string][]*blockRange),
+	}
+}
+
+// RecordSubmissionDaHeight records the DA height only if it's higher than previously recorded
+func (m *Metrics) RecordSubmissionDaHeight(chainID, submissionType string, daHeight uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if submissionType == "header" {
+		if daHeight > m.latestHeaderDaHeight {
+			m.latestHeaderDaHeight = daHeight
+			m.SubmissionDaHeight.WithLabelValues(chainID, "header").Set(float64(daHeight))
+		}
+		return
+	}
+
+	if submissionType == "data" {
+		if daHeight > m.latestDataDaHeight {
+			m.latestDataDaHeight = daHeight
+			m.SubmissionDaHeight.WithLabelValues(chainID, "data").Set(float64(daHeight))
+		}
 	}
 }
 
