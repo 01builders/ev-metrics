@@ -3,8 +3,12 @@ package celestia
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
+	"time"
 
 	coreda "github.com/evstack/ev-node/core/da"
 	"github.com/evstack/ev-node/da/jsonrpc"
@@ -17,6 +21,7 @@ import (
 type Client struct {
 	*jsonrpc.Client
 	logger zerolog.Logger
+	url    string
 }
 
 func NewClient(ctx context.Context, url, token string, logger zerolog.Logger) (*Client, error) {
@@ -29,6 +34,7 @@ func NewClient(ctx context.Context, url, token string, logger zerolog.Logger) (*
 	return &Client{
 		Client: client,
 		logger: logger.With().Str("component", "celestia_client").Logger(),
+		url:    url,
 	}, nil
 }
 
@@ -200,4 +206,75 @@ func (c *Client) VerifyDataBlobAtHeight(ctx context.Context, unwrappedDataBlob [
 		Int("checked_blobs", len(blobs)).
 		Msg("no matching Data found in any SignedData wrapper")
 	return false, nil
+}
+
+// GetBlockTimestamp retrieves the timestamp of a celestia da block at the given height
+func (c *Client) GetBlockTimestamp(ctx context.Context, daHeight uint64) (time.Time, error) {
+	type headerResult struct {
+		Header struct {
+			Time string `json:"time"`
+		} `json:"header"`
+	}
+
+	type rpcResponse struct {
+		Result headerResult `json:"result"`
+		Error  *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+
+	payload := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "header.GetByHeight",
+		"params":  []interface{}{daHeight},
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("failed to marshal json payload: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(body))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("http request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return time.Time{}, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	var rpcResp rpcResponse
+	if err := json.Unmarshal(respBody, &rpcResp); err != nil {
+		return time.Time{}, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	if rpcResp.Error != nil {
+		return time.Time{}, fmt.Errorf("rpc error (code %d): %s", rpcResp.Error.Code, rpcResp.Error.Message)
+	}
+
+	timestamp, err := time.Parse(time.RFC3339Nano, rpcResp.Result.Header.Time)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("failed to parse timestamp: %w", err)
+	}
+
+	c.logger.Debug().
+		Uint64("da_height", daHeight).
+		Time("timestamp", timestamp).
+		Msg("retrieved da block timestamp")
+
+	return timestamp, nil
 }
