@@ -30,6 +30,10 @@ type Metrics struct {
 	SubmissionDaHeight *prometheus.GaugeVec
 	// BlockTime tracks the time between consecutive blocks over a rolling window.
 	BlockTime *prometheus.SummaryVec
+	// JsonRpcRequestDuration tracks the duration of JSON-RPC requests to the EVM node.
+	JsonRpcRequestDuration *prometheus.HistogramVec
+	// JsonRpcRequestSloSeconds exports constant SLO thresholds for JSON-RPC requests.
+	JsonRpcRequestSloSeconds *prometheus.GaugeVec
 
 	// internal tracking to ensure we only record increasing DA heights
 	latestHeaderDaHeight uint64
@@ -55,7 +59,7 @@ func New(namespace string) *Metrics {
 // NewWithRegistry creates a new Metrics instance with a custom registry
 func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metrics {
 	factory := promauto.With(registerer)
-	return &Metrics{
+	m := &Metrics{
 		UnsubmittedRangeStart: factory.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Namespace: namespace,
@@ -143,9 +147,28 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 			},
 			[]string{"chain_id"},
 		),
+		JsonRpcRequestDuration: factory.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: namespace,
+				Name:      "jsonrpc_request_duration_seconds",
+				Help:      "duration of JSON-RPC requests to the EVM node",
+				Buckets:   []float64{0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0},
+			},
+			[]string{"chain_id"},
+		),
+		JsonRpcRequestSloSeconds: factory.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Name:      "jsonrpc_request_slo_seconds",
+				Help:      "SLO thresholds for JSON-RPC request duration",
+			},
+			[]string{"chain_id", "percentile"},
+		),
 		ranges:               make(map[string][]*blockRange),
 		lastBlockArrivalTime: make(map[string]time.Time),
 	}
+
+	return m
 }
 
 // RecordSubmissionDaHeight records the DA height only if it's higher than previously recorded
@@ -394,4 +417,17 @@ func (m *Metrics) RecordBlockTime(chainID string, arrivalTime time.Time) {
 
 	// update last seen arrival time
 	m.lastBlockArrivalTime[chainID] = arrivalTime
+}
+
+// RecordJsonRpcRequestDuration records the duration of a JSON-RPC request
+func (m *Metrics) RecordJsonRpcRequestDuration(chainID string, duration time.Duration) {
+	m.JsonRpcRequestDuration.WithLabelValues(chainID).Observe(duration.Seconds())
+}
+
+// InitializeJsonRpcSloThresholds initializes the constant SLO threshold gauges
+func (m *Metrics) InitializeJsonRpcSloThresholds(chainID string) {
+	m.JsonRpcRequestSloSeconds.WithLabelValues(chainID, "p50").Set(0.2)
+	m.JsonRpcRequestSloSeconds.WithLabelValues(chainID, "p90").Set(0.35)
+	m.JsonRpcRequestSloSeconds.WithLabelValues(chainID, "p95").Set(0.4)
+	m.JsonRpcRequestSloSeconds.WithLabelValues(chainID, "p99").Set(0.5)
 }
