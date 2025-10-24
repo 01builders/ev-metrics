@@ -12,6 +12,7 @@ import (
 	"github.com/01builders/ev-metrics/internal/celestia"
 	"github.com/01builders/ev-metrics/internal/evm"
 	"github.com/01builders/ev-metrics/internal/evnode"
+	"github.com/01builders/ev-metrics/internal/jsonrpc"
 	"github.com/01builders/ev-metrics/internal/metrics"
 	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
@@ -19,20 +20,22 @@ import (
 )
 
 const (
-	flagEvNodeAddr        = "evnode-addr"
-	flagEvmWSURL          = "evm-ws-url"
-	flagCelestiaURL       = "celestia-url"
-	flagCelestiaAuthToken = "celestia-token"
-	flagHeaderNS          = "header-namespace"
-	flagDataNS            = "data-namespace"
-	flagDuration          = "duration"
-	flagVerbose           = "verbose"
-	flagPort              = "port"
-	flagChain             = "chain-id"
-	flagEnableMetrics     = "enable-metrics"
-	flagReferenceNode     = "reference-node"
-	flagFullNodes         = "full-nodes"
-	flagPollingInterval   = "polling-interval"
+	flagEvNodeAddr            = "evnode-addr"
+	flagEvmWSURL              = "evm-ws-url"
+	flagEvmRpcURL             = "evm-rpc-url"
+	flagCelestiaURL           = "celestia-url"
+	flagCelestiaAuthToken     = "celestia-token"
+	flagHeaderNS              = "header-namespace"
+	flagDataNS                = "data-namespace"
+	flagDuration              = "duration"
+	flagVerbose               = "verbose"
+	flagPort                  = "port"
+	flagChain                 = "chain-id"
+	flagEnableMetrics         = "enable-metrics"
+	flagReferenceNode         = "reference-node"
+	flagFullNodes             = "full-nodes"
+	flagPollingInterval       = "polling-interval"
+	flagJsonRpcScrapeInterval = "jsonrpc-scrape-interval"
 
 	metricsPath = "/metrics"
 )
@@ -40,20 +43,22 @@ const (
 var flags flagValues
 
 type flagValues struct {
-	evnodeAddr        string
-	evmWSURL          string
-	celestiaURL       string
-	celestiaAuthToken string
-	headerNS          string
-	dataNS            string
-	duration          int
-	verbose           bool
-	port              int
-	chainID           string
-	enableMetrics     bool
-	referenceNode     string
-	fullNodes         string
-	pollingInterval   int
+	evnodeAddr            string
+	evmWSURL              string
+	evmRpcURL             string
+	celestiaURL           string
+	celestiaAuthToken     string
+	headerNS              string
+	dataNS                string
+	duration              int
+	verbose               bool
+	port                  int
+	chainID               string
+	enableMetrics         bool
+	referenceNode         string
+	fullNodes             string
+	pollingInterval       int
+	jsonRpcScrapeInterval int
 }
 
 func NewMonitorCmd() *cobra.Command {
@@ -70,6 +75,7 @@ func NewMonitorCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&flags.evnodeAddr, flagEvNodeAddr, "http://localhost:7331", "ev-node Connect RPC address")
 	cmd.Flags().StringVar(&flags.evmWSURL, flagEvmWSURL, "ws://localhost:8546", "EVM client WebSocket URL")
+	cmd.Flags().StringVar(&flags.evmRpcURL, flagEvmRpcURL, "", "EVM client JSON-RPC URL for health checks (optional, enables JSON-RPC monitoring)")
 	cmd.Flags().StringVar(&flags.celestiaURL, flagCelestiaURL, "http://localhost:26658", "Celestia DA JSON-RPC URL")
 	cmd.Flags().StringVar(&flags.celestiaAuthToken, flagCelestiaAuthToken, "", "Celestia authentication token (optional)")
 	cmd.Flags().StringVar(&flags.headerNS, flagHeaderNS, "", "Header namespace (my_app_header_namespace)")
@@ -82,6 +88,7 @@ func NewMonitorCmd() *cobra.Command {
 	cmd.Flags().StringVar(&flags.referenceNode, flagReferenceNode, "", "Reference node RPC endpoint URL (sequencer) for drift monitoring")
 	cmd.Flags().StringVar(&flags.fullNodes, flagFullNodes, "", "Comma-separated list of full node RPC endpoint URLs for drift monitoring")
 	cmd.Flags().IntVar(&flags.pollingInterval, flagPollingInterval, 10, "Polling interval in seconds for checking node block heights (default: 10)")
+	cmd.Flags().IntVar(&flags.jsonRpcScrapeInterval, flagJsonRpcScrapeInterval, 10, "JSON-RPC health check scrape interval in seconds (default: 10)")
 
 	if err := cmd.MarkFlagRequired(flagHeaderNS); err != nil {
 		panic(err)
@@ -130,7 +137,7 @@ type Config struct {
 func newClients(ctx context.Context, flags flagValues, logger zerolog.Logger) (*evnode.Client, *evm.Client, *celestia.Client, error) {
 	evnodeClient := evnode.NewClient(flags.evnodeAddr, logger)
 
-	evmClient, err := evm.NewClient(ctx, flags.evmWSURL, logger)
+	evmClient, err := evm.NewClient(ctx, flags.evmWSURL, flags.evmRpcURL, logger)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to connect to EVM client: %w", err)
 	}
@@ -202,6 +209,13 @@ func monitorAndVerifyDataAndHeaders(cmd *cobra.Command, args []string) error {
 		g.Go(func() error {
 			fullNodeList := strings.Split(flags.fullNodes, ",")
 			return drift.Monitor(ctx, m, flags.chainID, flags.referenceNode, fullNodeList, flags.pollingInterval, logger)
+		})
+	}
+
+	// Start JSON-RPC health monitoring if evm-rpc-url is provided
+	if flags.evmRpcURL != "" {
+		g.Go(func() error {
+			return jsonrpc.Monitor(ctx, m, flags.chainID, cfg.EvmClient, flags.jsonRpcScrapeInterval, logger)
 		})
 	}
 
