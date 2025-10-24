@@ -18,7 +18,7 @@ func NewMetricsExporter(chainID, referenceNode string, fullNodes []string, polli
 		referenceNode:   referenceNode,
 		fullNodes:       fullNodes,
 		pollingInterval: pollingInterval,
-		logger:          logger,
+		logger:          logger.With().Str("component", "drift_monitor").Logger(),
 	}
 }
 
@@ -31,47 +31,47 @@ type exporter struct {
 	logger          zerolog.Logger
 }
 
-// GatherMetrics continuously checks block heights of a reference node and multiple full nodes,
+// ExportMetrics continuously checks block heights of a reference node and multiple full nodes,
 // recording the heights and their drift into the provided metrics instance at specified intervals.
-func (g exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error {
-	ticker := time.NewTicker(time.Duration(g.pollingInterval) * time.Second)
+func (e exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error {
+	ticker := time.NewTicker(time.Duration(e.pollingInterval) * time.Second)
 	defer ticker.Stop()
 
-	g.logger.Info().
-		Str("reference_node", g.referenceNode).
-		Strs("full_nodes", g.fullNodes).
-		Int("polling_interval_sec", g.pollingInterval).
+	e.logger.Info().
+		Str("reference_node", e.referenceNode).
+		Strs("full_nodes", e.fullNodes).
+		Int("polling_interval_sec", e.pollingInterval).
 		Msg("starting node drift monitoring")
 
 	for {
 		select {
 		case <-ctx.Done():
-			g.logger.Info().Msg("stopping node drift monitoring")
+			e.logger.Info().Msg("stopping node drift monitoring")
 			return ctx.Err()
 		case <-ticker.C:
 			// get reference node height
-			refHeight, err := getBlockHeight(ctx, g.referenceNode)
+			refHeight, err := getBlockHeight(ctx, e.referenceNode)
 			if err != nil {
-				g.logger.Error().Err(err).Str("endpoint", g.referenceNode).Msg("failed to get reference node block height")
+				e.logger.Error().Err(err).Str("endpoint", e.referenceNode).Msg("failed to get reference node block height")
 				continue
 			}
 
-			m.RecordReferenceBlockHeight(g.chainID, g.referenceNode, refHeight)
-			g.logger.Info().Uint64("height", refHeight).Str("endpoint", g.referenceNode).Msg("recorded reference node height")
+			m.RecordReferenceBlockHeight(e.chainID, e.referenceNode, refHeight)
+			e.logger.Info().Uint64("height", refHeight).Str("endpoint", e.referenceNode).Msg("recorded reference node height")
 
 			// get each full node height and calculate drift
-			for _, fullNode := range g.fullNodes {
+			for _, fullNode := range e.fullNodes {
 				currentHeight, err := getBlockHeight(ctx, fullNode)
 				if err != nil {
-					g.logger.Error().Err(err).Str("endpoint", fullNode).Msg("failed to get full node block height")
+					e.logger.Error().Err(err).Str("endpoint", fullNode).Msg("failed to get full node block height")
 					continue
 				}
 
-				m.RecordCurrentBlockHeight(g.chainID, fullNode, currentHeight)
-				m.RecordBlockHeightDrift(g.chainID, fullNode, refHeight, currentHeight)
+				m.RecordCurrentBlockHeight(e.chainID, fullNode, currentHeight)
+				m.RecordBlockHeightDrift(e.chainID, fullNode, refHeight, currentHeight)
 
 				drift := int64(refHeight) - int64(currentHeight)
-				g.logger.Info().
+				e.logger.Info().
 					Uint64("ref_height", refHeight).
 					Uint64("target_height", currentHeight).
 					Int64("drift", drift).

@@ -2,7 +2,14 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
 	"github.com/01builders/ev-metrics/internal/clients/celestia"
 	"github.com/01builders/ev-metrics/internal/clients/evm"
 	"github.com/01builders/ev-metrics/internal/clients/evnode"
@@ -11,12 +18,8 @@ import (
 	"github.com/01builders/ev-metrics/pkg/exporters/verifier"
 	"github.com/01builders/ev-metrics/pkg/metrics"
 	coreda "github.com/evstack/ev-node/core/da"
-	"os"
-	"time"
-
 	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
-	"strings"
 )
 
 const (
@@ -155,7 +158,15 @@ func monitorAndExportMetrics(_ *cobra.Command, _ []string) error {
 		Timestamp().
 		Logger()
 
-	ctx := context.Background()
+	// setup context with signal handling for graceful shutdown
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// log when signal is received
+	go func() {
+		<-ctx.Done()
+		logger.Info().Msg("received shutdown signal (Ctrl+C), shutting down gracefully...")
+	}()
 
 	cfg, err := initializeClientsAndLoadConfig(ctx, logger)
 	if err != nil {
@@ -197,5 +208,13 @@ func monitorAndExportMetrics(_ *cobra.Command, _ []string) error {
 		exporters = append(exporters, jsonrpc.NewMetricsExporter(flags.chainID, cfg.EvmClient, flags.jsonRpcScrapeInterval, logger))
 	}
 
-	return metrics.StartServer(ctx, metricsPath, flags.port, logger, exporters...)
+	err = metrics.StartServer(ctx, metricsPath, flags.port, logger, exporters...)
+
+	// context.Canceled is expected during graceful shutdown, not an error
+	if err != nil && !errors.Is(err, context.Canceled) {
+		return err
+	}
+
+	logger.Info().Msg("shutdown complete")
+	return nil
 }

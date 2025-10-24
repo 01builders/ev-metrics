@@ -16,7 +16,7 @@ func NewMetricsExporter(chainID string, evmClient *evm.Client, scrapeInterval in
 		chainID:        chainID,
 		evmClient:      evmClient,
 		scrapeInterval: scrapeInterval,
-		logger:         logger,
+		logger:         logger.With().Str("component", "jsonrpc_monitor").Logger(),
 	}
 }
 
@@ -27,32 +27,32 @@ type exporter struct {
 	logger         zerolog.Logger
 }
 
-func (g *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error {
-	logger := g.logger.With().Str("component", "jsonrpc_monitor").Logger()
-	logger.Info().
-		Str("chain_id", g.chainID).
-		Int("scrape_interval_seconds", g.scrapeInterval).
+// ExportMetrics starts the JSON-RPC health monitoring loop
+func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error {
+	e.logger.Info().
+		Str("chain_id", e.chainID).
+		Int("scrape_interval_seconds", e.scrapeInterval).
 		Msg("starting JSON-RPC health monitoring")
 
 	// Initialize SLO threshold gauges once at startup
-	m.InitializeJsonRpcSloThresholds(g.chainID)
+	m.InitializeJsonRpcSloThresholds(e.chainID)
 
-	ticker := time.NewTicker(time.Duration(g.scrapeInterval) * time.Second)
+	ticker := time.NewTicker(time.Duration(e.scrapeInterval) * time.Second)
 	defer ticker.Stop()
 
 	// Perform initial health check immediately
-	if err := performHealthCheck(ctx, m, g.chainID, g.evmClient, logger); err != nil {
-		logger.Warn().Err(err).Msg("initial health check failed")
+	if err := performHealthCheck(ctx, m, e.chainID, e.evmClient, e.logger); err != nil {
+		e.logger.Warn().Err(err).Msg("initial health check failed")
 	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Info().Msg("stopping JSON-RPC health monitoring")
+			e.logger.Info().Msg("stopping JSON-RPC health monitoring")
 			return ctx.Err()
 		case <-ticker.C:
-			if err := performHealthCheck(ctx, m, g.chainID, g.evmClient, logger); err != nil {
-				logger.Warn().Err(err).Msg("health check failed")
+			if err := performHealthCheck(ctx, m, e.chainID, e.evmClient, e.logger); err != nil {
+				e.logger.Warn().Err(err).Msg("health check failed")
 			}
 		}
 	}
