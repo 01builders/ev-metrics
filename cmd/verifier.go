@@ -58,8 +58,16 @@ func (v *BlockVerifier) VerifyHeadersAndData(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
-			// when a new unverified status is received, spawn a goroutine to handle retries.
 		case header := <-headers:
+			// record block arrival time for millisecond precision
+			arrivalTime := time.Now()
+			v.metrics.RecordBlockTime(v.chainID, arrivalTime)
+
+			v.logger.Debug().
+				Uint64("block_height", header.Number.Uint64()).
+				Time("arrival_time", arrivalTime).
+				Msg("received block header from subscription")
+
 			// spawn a goroutine to handle this block's retries
 			go v.verifyBlock(ctx, header)
 		}
@@ -88,16 +96,17 @@ func (v *BlockVerifier) verifyBlock(ctx context.Context, header *types.Header) {
 		namespace = "data"
 	}
 
+	blockTime := time.Unix(int64(header.Time), 0)
+
 	logger := v.logger.With().Str("namespace", namespace).Uint64("block_height", blockHeight).Logger()
 	logger.Info().
 		Str("hash", header.Hash().Hex()).
-		Time("time", time.Unix(int64(header.Time), 0)).
+		Time("time", blockTime).
 		Uint64("gas_used", header.GasUsed).
 		Bool("has_transactions", hasTransactions).
 		Msg("processing block")
 
 	startTime := time.Now()
-	blockTime := time.Unix(int64(header.Time), 0)
 
 	// exponential backoff intervals matching observed DA submission timing
 	retryIntervals := []time.Duration{
