@@ -3,17 +3,17 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"github.com/01builders/ev-metrics/internal/drift"
+	"github.com/01builders/ev-metrics/internal/clients/celestia"
+	"github.com/01builders/ev-metrics/internal/clients/evm"
+	"github.com/01builders/ev-metrics/internal/clients/evnode"
+	"github.com/01builders/ev-metrics/pkg/exporters/drift"
+	"github.com/01builders/ev-metrics/pkg/exporters/jsonrpc"
+	"github.com/01builders/ev-metrics/pkg/exporters/verifier"
+	"github.com/01builders/ev-metrics/pkg/metrics"
 	coreda "github.com/evstack/ev-node/core/da"
-	"golang.org/x/sync/errgroup"
 	"os"
 	"time"
 
-	"github.com/01builders/ev-metrics/internal/celestia"
-	"github.com/01builders/ev-metrics/internal/evm"
-	"github.com/01builders/ev-metrics/internal/evnode"
-	"github.com/01builders/ev-metrics/internal/jsonrpc"
-	"github.com/01builders/ev-metrics/internal/metrics"
 	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
 	"strings"
@@ -31,7 +31,6 @@ const (
 	flagVerbose               = "verbose"
 	flagPort                  = "port"
 	flagChain                 = "chain-id"
-	flagEnableMetrics         = "enable-metrics"
 	flagReferenceNode         = "reference-node"
 	flagFullNodes             = "full-nodes"
 	flagPollingInterval       = "polling-interval"
@@ -54,7 +53,6 @@ type flagValues struct {
 	verbose               bool
 	port                  int
 	chainID               string
-	enableMetrics         bool
 	referenceNode         string
 	fullNodes             string
 	pollingInterval       int
@@ -70,7 +68,7 @@ func NewMonitorCmd() *cobra.Command {
 2. Queries ev-node Store API to get the DA heights where this block was published
 3. Queries Celestia to verify the blobs exist at those DA heights
 4. Shows the complete data flow from EVM block → ev-node → Celestia DA`,
-		RunE: monitorAndVerifyDataAndHeaders,
+		RunE: monitorAndExportMetrics,
 	}
 
 	cmd.Flags().StringVar(&flags.evnodeAddr, flagEvNodeAddr, "http://localhost:7331", "ev-node Connect RPC address")
@@ -82,7 +80,6 @@ func NewMonitorCmd() *cobra.Command {
 	cmd.Flags().StringVar(&flags.dataNS, flagDataNS, "", "Data namespace (my_app_data_namespace)")
 	cmd.Flags().IntVar(&flags.duration, flagDuration, 0, "Duration in seconds to stream (0 = infinite)")
 	cmd.Flags().BoolVar(&flags.verbose, flagVerbose, false, "Enable verbose logging")
-	cmd.Flags().BoolVar(&flags.enableMetrics, flagEnableMetrics, false, "Enable Prometheus metrics HTTP server")
 	cmd.Flags().IntVar(&flags.port, flagPort, 2112, "HTTP server port for metrics (only used if --enable-metrics is set)")
 	cmd.Flags().StringVar(&flags.chainID, flagChain, "testnet", "chainID identifier for metrics labels")
 	cmd.Flags().StringVar(&flags.referenceNode, flagReferenceNode, "", "Reference node RPC endpoint URL (sequencer) for drift monitoring")
@@ -115,7 +112,6 @@ func initializeClientsAndLoadConfig(ctx context.Context, logger zerolog.Logger) 
 
 	return &Config{
 		EvnodeAddr:     flags.evnodeAddr,
-		EvmWSURL:       flags.evmWSURL,
 		EVNodeClient:   evNodeClient,
 		EvmClient:      evmClient,
 		CelestiaClient: celestiaClient,
@@ -126,7 +122,6 @@ func initializeClientsAndLoadConfig(ctx context.Context, logger zerolog.Logger) 
 
 type Config struct {
 	EvnodeAddr     string
-	EvmWSURL       string
 	EVNodeClient   *evnode.Client
 	EvmClient      *evm.Client
 	CelestiaClient *celestia.Client
@@ -148,7 +143,7 @@ func newClients(ctx context.Context, flags flagValues, logger zerolog.Logger) (*
 	return evnodeClient, evmClient, celestiaClient, nil
 }
 
-func monitorAndVerifyDataAndHeaders(cmd *cobra.Command, args []string) error {
+func monitorAndExportMetrics(_ *cobra.Command, _ []string) error {
 	// Setup logger
 	logLevel := zerolog.InfoLevel
 	if flags.verbose {
@@ -179,45 +174,28 @@ func monitorAndVerifyDataAndHeaders(cmd *cobra.Command, args []string) error {
 		defer cancel()
 	}
 
-	// initialize metrics
-	m := metrics.New("ev_metrics")
-	// create block verifier
-	verifier := NewBlockVerifier(
-		cfg.EVNodeClient,
-		cfg.CelestiaClient,
-		cfg.EvmClient,
-		cfg.HeaderNS,
-		cfg.DataNS,
-		m,
-		flags.chainID,
-		logger,
-	)
-
-	var g errgroup.Group
-
-	if flags.enableMetrics {
-		g.Go(func() error {
-			return metrics.StartServer(metricsPath, flags.port, logger)
-		})
+	exporters := []metrics.Exporter{
+		// by default always run the verifier exporter
+		verifier.NewMetricsExporter(
+			cfg.EVNodeClient,
+			cfg.CelestiaClient,
+			cfg.EvmClient,
+			cfg.HeaderNS,
+			cfg.DataNS,
+			flags.chainID,
+			logger,
+		),
 	}
 
-	g.Go(func() error {
-		return verifier.VerifyHeadersAndData(ctx)
-	})
-
 	if flags.referenceNode != "" && flags.fullNodes != "" {
-		g.Go(func() error {
-			fullNodeList := strings.Split(flags.fullNodes, ",")
-			return drift.Monitor(ctx, m, flags.chainID, flags.referenceNode, fullNodeList, flags.pollingInterval, logger)
-		})
+		fullNodeList := strings.Split(flags.fullNodes, ",")
+		exporters = append(exporters, drift.NewMetricsExporter(flags.chainID, flags.referenceNode, fullNodeList, flags.pollingInterval, logger))
 	}
 
 	// Start JSON-RPC health monitoring if evm-rpc-url is provided
 	if flags.evmRpcURL != "" {
-		g.Go(func() error {
-			return jsonrpc.Monitor(ctx, m, flags.chainID, cfg.EvmClient, flags.jsonRpcScrapeInterval, logger)
-		})
+		exporters = append(exporters, jsonrpc.NewMetricsExporter(flags.chainID, cfg.EvmClient, flags.jsonRpcScrapeInterval, logger))
 	}
 
-	return g.Wait()
+	return metrics.StartServer(ctx, metricsPath, flags.port, logger, exporters...)
 }

@@ -1,52 +1,50 @@
-package cmd
+package verifier
 
 import (
 	"context"
-	"github.com/01builders/ev-metrics/internal/celestia"
-	"github.com/01builders/ev-metrics/internal/evm"
-	"github.com/01builders/ev-metrics/internal/evnode"
-	"github.com/01builders/ev-metrics/internal/metrics"
+	"github.com/01builders/ev-metrics/internal/clients/celestia"
+	"github.com/01builders/ev-metrics/internal/clients/evm"
+	"github.com/01builders/ev-metrics/internal/clients/evnode"
+	"github.com/01builders/ev-metrics/pkg/metrics"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/rs/zerolog"
 	"time"
 )
 
-// BlockVerifier handles verification of blocks against Celestia DA
-type BlockVerifier struct {
-	evnodeClient   *evnode.Client
-	celestiaClient *celestia.Client
-	evmClient      *evm.Client
-	headerNS       []byte
-	dataNS         []byte
-	metrics        *metrics.Metrics
-	chainID        string
-	logger         zerolog.Logger
-}
+var _ metrics.Exporter = &exporter{}
 
-// NewBlockVerifier creates a new BlockVerifier
-func NewBlockVerifier(
+// NewMetricsExporter creates a new exporter
+func NewMetricsExporter(
 	evnodeClient *evnode.Client,
 	celestiaClient *celestia.Client,
 	evmClient *evm.Client,
 	headerNS, dataNS []byte,
-	metrics *metrics.Metrics,
 	chainID string,
 	logger zerolog.Logger,
-) *BlockVerifier {
-	return &BlockVerifier{
+) metrics.Exporter {
+	return &exporter{
 		evnodeClient:   evnodeClient,
 		evmClient:      evmClient,
 		celestiaClient: celestiaClient,
 		headerNS:       headerNS,
 		dataNS:         dataNS,
-		metrics:        metrics,
 		chainID:        chainID,
 		logger:         logger,
 	}
 }
 
-// VerifyHeadersAndData begins the background retry processor
-func (v *BlockVerifier) VerifyHeadersAndData(ctx context.Context) error {
+// exporter handles verification of blocks against Celestia DA
+type exporter struct {
+	evnodeClient   *evnode.Client
+	celestiaClient *celestia.Client
+	evmClient      *evm.Client
+	headerNS       []byte
+	dataNS         []byte
+	chainID        string
+	logger         zerolog.Logger
+}
+
+func (v *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error {
 	headers := make(chan *types.Header, 10)
 	sub, err := v.evmClient.SubscribeNewHead(ctx, headers)
 	if err != nil {
@@ -61,7 +59,7 @@ func (v *BlockVerifier) VerifyHeadersAndData(ctx context.Context) error {
 		case header := <-headers:
 			// record block arrival time for millisecond precision
 			arrivalTime := time.Now()
-			v.metrics.RecordBlockTime(v.chainID, arrivalTime)
+			m.RecordBlockTime(v.chainID, arrivalTime)
 
 			v.logger.Debug().
 				Uint64("block_height", header.Number.Uint64()).
@@ -69,23 +67,23 @@ func (v *BlockVerifier) VerifyHeadersAndData(ctx context.Context) error {
 				Msg("received block header from subscription")
 
 			// spawn a goroutine to handle this block's retries
-			go v.verifyBlock(ctx, header)
+			go v.verifyBlock(ctx, m, header)
 		}
 	}
 }
 
-func (v *BlockVerifier) onVerified(namespace string, blockHeight, daHeight uint64, verified bool, submissionDuration time.Duration) {
+func (v *exporter) onVerified(m *metrics.Metrics, namespace string, blockHeight, daHeight uint64, verified bool, submissionDuration time.Duration) {
 	if verified {
-		v.metrics.RecordSubmissionDaHeight(v.chainID, namespace, daHeight)
-		v.metrics.RemoveVerifiedBlock(v.chainID, namespace, blockHeight)
-		v.metrics.RecordSubmissionDuration(v.chainID, namespace, submissionDuration)
+		m.RecordSubmissionDaHeight(v.chainID, namespace, daHeight)
+		m.RemoveVerifiedBlock(v.chainID, namespace, blockHeight)
+		m.RecordSubmissionDuration(v.chainID, namespace, submissionDuration)
 	} else {
-		v.metrics.RecordMissingBlock(v.chainID, namespace, blockHeight)
+		m.RecordMissingBlock(v.chainID, namespace, blockHeight)
 	}
 }
 
 // verifyBlock attempts to verify a DA height for a given block status.
-func (v *BlockVerifier) verifyBlock(ctx context.Context, header *types.Header) {
+func (v *exporter) verifyBlock(ctx context.Context, m *metrics.Metrics, header *types.Header) {
 	blockHeight := header.Number.Uint64()
 
 	// check if block has transactions
@@ -174,7 +172,7 @@ func (v *BlockVerifier) verifyBlock(ctx context.Context, header *types.Header) {
 					Uint64("da_height", daHeight).
 					Dur("duration", time.Since(startTime)).
 					Msg("header blob verified on Celestia")
-				v.onVerified(namespace, blockHeight, daHeight, true, submissionDuration)
+				v.onVerified(m, namespace, blockHeight, daHeight, true, submissionDuration)
 				return
 			}
 
@@ -184,7 +182,7 @@ func (v *BlockVerifier) verifyBlock(ctx context.Context, header *types.Header) {
 					Uint64("da_height", daHeight).
 					Dur("duration", time.Since(startTime)).
 					Msg("max retries reached - header blob not verified")
-				v.onVerified(namespace, blockHeight, daHeight, false, 0)
+				v.onVerified(m, namespace, blockHeight, daHeight, false, 0)
 				return
 			}
 			logger.Warn().Uint64("da_height", daHeight).Int("attempt", retries).Msg("verification failed, will retry")
@@ -194,7 +192,7 @@ func (v *BlockVerifier) verifyBlock(ctx context.Context, header *types.Header) {
 				logger.Info().
 					Dur("duration", time.Since(startTime)).
 					Msg("empty data block - no verification needed")
-				v.onVerified(namespace, blockHeight, daHeight, true, submissionDuration)
+				v.onVerified(m, namespace, blockHeight, daHeight, true, submissionDuration)
 				return
 			}
 
@@ -210,7 +208,7 @@ func (v *BlockVerifier) verifyBlock(ctx context.Context, header *types.Header) {
 					Uint64("da_height", daHeight).
 					Dur("duration", time.Since(startTime)).
 					Msg("data blob verified on Celestia")
-				v.onVerified(namespace, blockHeight, daHeight, true, submissionDuration)
+				v.onVerified(m, namespace, blockHeight, daHeight, true, submissionDuration)
 				return
 			}
 
@@ -220,7 +218,7 @@ func (v *BlockVerifier) verifyBlock(ctx context.Context, header *types.Header) {
 					Uint64("da_height", daHeight).
 					Dur("duration", time.Since(startTime)).
 					Msg("max retries reached - data blob not verified")
-				v.onVerified(namespace, blockHeight, daHeight, false, 0)
+				v.onVerified(m, namespace, blockHeight, daHeight, false, 0)
 				return
 			}
 			logger.Warn().Uint64("da_height", daHeight).Int("attempt", retries).Msg("verification failed, will retry")
@@ -233,5 +231,5 @@ func (v *BlockVerifier) verifyBlock(ctx context.Context, header *types.Header) {
 
 	// if loop completes without success, log final error
 	logger.Error().Msg("max retries exhausted - ALERT: failed to verify block")
-	v.onVerified(namespace, blockHeight, 0, false, 0)
+	v.onVerified(m, namespace, blockHeight, 0, false, 0)
 }
