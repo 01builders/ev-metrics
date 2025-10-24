@@ -28,6 +28,8 @@ type Metrics struct {
 	SubmissionDuration *prometheus.SummaryVec
 	// SubmissionDaHeight tracks the DA height at which blocks were submitted.
 	SubmissionDaHeight *prometheus.GaugeVec
+	// BlockTime tracks the time between consecutive blocks over a rolling window.
+	BlockTime *prometheus.SummaryVec
 	// JsonRpcRequestDuration tracks the duration of JSON-RPC requests to the EVM node.
 	JsonRpcRequestDuration *prometheus.HistogramVec
 	// JsonRpcRequestSloSeconds exports constant SLO thresholds for JSON-RPC requests.
@@ -36,6 +38,9 @@ type Metrics struct {
 	// internal tracking to ensure we only record increasing DA heights
 	latestHeaderDaHeight uint64
 	latestDataDaHeight   uint64
+
+	// internal tracking for block time calculation (uses arrival time for ms precision)
+	lastBlockArrivalTime map[string]time.Time // key: chainID
 
 	mu     sync.Mutex
 	ranges map[string][]*blockRange // key: blobType -> sorted slice of ranges
@@ -127,6 +132,21 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 			},
 			[]string{"chain_id", "type"},
 		),
+		BlockTime: factory.NewSummaryVec(
+			prometheus.SummaryOpts{
+				Namespace: namespace,
+				Name:      "block_time_seconds",
+				Help:      "time between consecutive blocks over rolling window",
+				Objectives: map[float64]float64{
+					0.5:  0.05, // median block time
+					0.9:  0.01, // p90
+					0.99: 0.01, // p99
+				},
+				MaxAge:     5 * time.Minute,
+				AgeBuckets: 5,
+			},
+			[]string{"chain_id"},
+		),
 		JsonRpcRequestDuration: factory.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Namespace: namespace,
@@ -144,7 +164,8 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 			},
 			[]string{"chain_id", "percentile"},
 		),
-		ranges: make(map[string][]*blockRange),
+		ranges:               make(map[string][]*blockRange),
+		lastBlockArrivalTime: make(map[string]time.Time),
 	}
 
 	return m
@@ -377,6 +398,25 @@ func (m *Metrics) RecordBlockHeightDrift(chainID, targetEndpoint string, referen
 // RecordSubmissionDuration records the da submission duration for a given submission type
 func (m *Metrics) RecordSubmissionDuration(chainID, submissionType string, duration time.Duration) {
 	m.SubmissionDuration.WithLabelValues(chainID, submissionType).Observe(duration.Seconds())
+}
+
+// RecordBlockTime records the time between consecutive blocks using arrival time
+// uses wall clock time when blocks arrive for millisecond precision
+func (m *Metrics) RecordBlockTime(chainID string, arrivalTime time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	lastArrival, exists := m.lastBlockArrivalTime[chainID]
+	if exists {
+		blockTime := arrivalTime.Sub(lastArrival)
+		// only record positive durations
+		if blockTime > 0 {
+			m.BlockTime.WithLabelValues(chainID).Observe(blockTime.Seconds())
+		}
+	}
+
+	// update last seen arrival time
+	m.lastBlockArrivalTime[chainID] = arrivalTime
 }
 
 // RecordJsonRpcRequestDuration records the duration of a JSON-RPC request
